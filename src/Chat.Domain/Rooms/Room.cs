@@ -127,13 +127,17 @@ public sealed partial class Room : AggregateRoot
         return Message.Create(Id, sender, body, now);
     }
 
-    public void MarkRead(string userName, long messageId, DateTimeOffset now)
+    /// <summary>Advances the member's read marker; returns false if it was already at or past it.</summary>
+    public bool MarkRead(string userName, long messageId, DateTimeOffset now)
     {
         var member = EnsureMember(userName);
-        if (member.AdvanceReadMarker(messageId, now))
+        if (!member.AdvanceReadMarker(messageId, now))
         {
-            Raise(new MessagesRead(Id, userName, messageId, now));
+            return false;
         }
+
+        Raise(new MessagesRead(Id, userName, messageId, now));
+        return true;
     }
 
     private RoomMember? FindMember(string userName) =>

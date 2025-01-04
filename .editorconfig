@@ -18,3 +18,6 @@ trim_trailing_whitespace = false
 csharp_style_namespace_declarations = file_scoped:warning
 csharp_style_var_for_built_in_types = true:suggestion
 dotnet_sort_system_directives_first = true
+
+# "Handler" suffixes are the convention for command, query and domain event handlers.
+dotnet_diagnostic.CA1711.severity = none
