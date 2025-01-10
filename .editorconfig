@@ -21,3 +21,6 @@ dotnet_sort_system_directives_first = true
 
 # "Handler" suffixes are the convention for command, query and domain event handlers.
 dotnet_diagnostic.CA1711.severity = none
+
+[src/Chat.Infrastructure/Persistence/Migrations/*.cs]
+generated_code = true
