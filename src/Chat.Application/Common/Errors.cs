@@ -8,3 +8,5 @@ public sealed class NotFoundException(string message) : ChatException(message);
 public sealed class ForbiddenException(string message) : ChatException(message);
 
 public sealed class ConflictException(string message) : ChatException(message);
+
+public sealed class RequestValidationException(string message) : ChatException(message);

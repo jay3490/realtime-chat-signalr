@@ -18,8 +18,18 @@ public static class DependencyInjection
         var writeConnection = configuration.GetConnectionString("Chat")
             ?? throw new InvalidOperationException("ConnectionStrings:Chat is not configured.");
 
+        // Queries go through their own context and, optionally, their own connection.
+        var readConnection = configuration.GetConnectionString("ChatRead");
+        if (string.IsNullOrWhiteSpace(readConnection))
+        {
+            readConnection = writeConnection;
+        }
+
         services.AddDbContext<ChatDbContext>(db => UseProvider(db, options.Provider, writeConnection));
         services.AddScoped<IChatDbContext>(sp => sp.GetRequiredService<ChatDbContext>());
+
+        services.AddDbContext<ChatReadDbContext>(db => UseProvider(db, options.Provider, readConnection));
+        services.AddScoped<IChatReadDbContext>(sp => sp.GetRequiredService<ChatReadDbContext>());
 
         return services;
     }
