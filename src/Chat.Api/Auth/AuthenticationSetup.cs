@@ -6,6 +6,8 @@ namespace Chat.Api.Auth;
 
 internal static class AuthenticationSetup
 {
+    private const string HubPath = Realtime.ChatHub.Path;
+
     public static IServiceCollection AddChatAuthentication(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddOptions<JwtOptions>()
@@ -28,6 +30,22 @@ internal static class AuthenticationSetup
                     IssuerSigningKey = jwt.CreateSecurityKey(),
                     NameClaimType = ChatClaims.UserName,
                     ClockSkew = TimeSpan.FromSeconds(30),
+                };
+
+                // Browsers cannot set headers on WebSocket or EventSource requests, so the
+                // SignalR client sends the token in the query string for the hub only.
+                bearer.Events = new JwtBearerEvents
+                {
+                    OnMessageReceived = context =>
+                    {
+                        var token = context.Request.Query["access_token"];
+                        if (!string.IsNullOrEmpty(token) && context.HttpContext.Request.Path.StartsWithSegments(HubPath))
+                        {
+                            context.Token = token;
+                        }
+
+                        return Task.CompletedTask;
+                    },
                 };
             });
 

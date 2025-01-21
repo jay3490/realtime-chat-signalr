@@ -3,6 +3,7 @@ using Chat.Api.Auth;
 using Chat.Application.Abstractions;
 using Chat.Application.Messages;
 using Chat.Application.Messages.Queries;
+using Chat.Application.Realtime;
 using Chat.Application.Rooms;
 using Chat.Application.Rooms.Queries;
 using Chat.Application.Users.Queries;
@@ -85,6 +86,9 @@ internal static class ChatEndpoints
 
         api.MapGet("/users", (IDispatcher dispatcher, CancellationToken ct) =>
             dispatcher.QueryAsync(new GetUsersQuery(), ct));
+
+        api.MapGet("/presence", (IPresenceTracker presence, CancellationToken ct) =>
+            presence.GetOnlineUsersAsync(ct));
 
         return app;
     }

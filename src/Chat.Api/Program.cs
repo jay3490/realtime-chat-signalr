@@ -2,14 +2,18 @@ using System.Text.Json.Serialization;
 using Chat.Api.Auth;
 using Chat.Api.Endpoints;
 using Chat.Api.Errors;
+using Chat.Api.Realtime;
 using Chat.Application;
 using Chat.Infrastructure;
+using Chat.Infrastructure.Presence;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddChatApplication(typeof(Program).Assembly);
 builder.Services.AddChatPersistence(builder.Configuration);
 builder.Services.AddChatAuthentication(builder.Configuration);
+builder.Services.AddChatPresence(builder.Configuration);
+builder.Services.AddChatRealtime();
 
 builder.Services.ConfigureHttpJsonOptions(json =>
     json.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
@@ -36,6 +40,7 @@ app.UseAuthorization();
 app.MapHealthChecks("/health");
 app.MapDevTokenEndpoint();
 app.MapChatEndpoints();
+app.MapHub<ChatHub>(ChatHub.Path);
 
 await app.RunAsync();
 
