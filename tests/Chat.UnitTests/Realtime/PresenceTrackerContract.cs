@@ -6,6 +6,7 @@ namespace Chat.UnitTests.Realtime;
 /// <summary>
 /// Behaviour every presence tracker must have. Each implementation runs the same tests,
 /// which keeps the single-instance tracker and the Redis tracker interchangeable.
+/// Tests are skippable so an implementation can skip when its backing service is absent.
 /// </summary>
 public abstract class PresenceTrackerContract
 {
@@ -15,14 +16,14 @@ public abstract class PresenceTrackerContract
 
     protected abstract IPresenceTracker Tracker { get; }
 
-    [Fact]
+    [SkippableFact]
     public async Task First_connection_brings_a_user_online()
     {
         Assert.True(await Tracker.ConnectAsync("alice", "c1"));
         Assert.Equal(["alice"], await Tracker.GetOnlineUsersAsync());
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Further_connections_do_not_announce_the_user_again()
     {
         await Tracker.ConnectAsync("alice", "phone");
@@ -31,7 +32,7 @@ public abstract class PresenceTrackerContract
         Assert.Equal(["laptop", "phone"], (await Tracker.GetConnectionsAsync("alice")).Order(StringComparer.Ordinal));
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Closing_one_of_several_connections_keeps_the_user_online()
     {
         await Tracker.ConnectAsync("alice", "phone");
@@ -42,7 +43,7 @@ public abstract class PresenceTrackerContract
         Assert.Equal(["laptop"], await Tracker.GetConnectionsAsync("alice"));
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Closing_the_last_connection_takes_the_user_offline()
     {
         await Tracker.ConnectAsync("alice", "phone");
@@ -54,13 +55,13 @@ public abstract class PresenceTrackerContract
         Assert.Empty(await Tracker.GetConnectionsAsync("alice"));
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Disconnecting_an_unknown_connection_reports_nothing()
     {
         Assert.False(await Tracker.DisconnectAsync("alice", "never-connected"));
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Users_are_tracked_independently()
     {
         await Tracker.ConnectAsync("alice", "a1");
@@ -71,7 +72,7 @@ public abstract class PresenceTrackerContract
         Assert.Equal(["bob"], await Tracker.GetOnlineUsersAsync());
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Connections_that_stop_being_renewed_expire()
     {
         await Tracker.ConnectAsync("alice", "on-crashed-instance");
@@ -87,7 +88,7 @@ public abstract class PresenceTrackerContract
         Assert.Equal(["bob"], await Tracker.GetOnlineUsersAsync());
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task An_expired_connection_does_not_keep_a_user_online_after_their_live_one_closes()
     {
         await Tracker.ConnectAsync("alice", "stale");
@@ -97,7 +98,7 @@ public abstract class PresenceTrackerContract
         Assert.True(await Tracker.DisconnectAsync("alice", "fresh"));
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Renewing_does_not_resurrect_a_closed_connection()
     {
         await Tracker.ConnectAsync("alice", "c1");
@@ -108,7 +109,7 @@ public abstract class PresenceTrackerContract
         Assert.Empty(await Tracker.GetOnlineUsersAsync());
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Expiry_reports_each_user_once()
     {
         await Tracker.ConnectAsync("alice", "c1");

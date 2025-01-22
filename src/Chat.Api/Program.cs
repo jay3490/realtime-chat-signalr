@@ -13,7 +13,7 @@ builder.Services.AddChatApplication(typeof(Program).Assembly);
 builder.Services.AddChatPersistence(builder.Configuration);
 builder.Services.AddChatAuthentication(builder.Configuration);
 builder.Services.AddChatPresence(builder.Configuration);
-builder.Services.AddChatRealtime();
+builder.Services.AddChatRealtime(builder.Configuration);
 
 builder.Services.ConfigureHttpJsonOptions(json =>
     json.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));

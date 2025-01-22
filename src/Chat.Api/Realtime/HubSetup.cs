@@ -1,23 +1,35 @@
 using System.Text.Json.Serialization;
 using Chat.Api.Auth;
 using Chat.Api.Errors;
+using Chat.Infrastructure.Presence;
 using Microsoft.AspNetCore.SignalR;
+using StackExchange.Redis;
 
 namespace Chat.Api.Realtime;
 
 internal static class HubSetup
 {
-    public static IServiceCollection AddChatRealtime(this IServiceCollection services)
+    public static IServiceCollection AddChatRealtime(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddSingleton<LocalConnections>();
         services.AddSingleton<IUserIdProvider, UserNameIdProvider>();
         services.AddHostedService<PresenceHeartbeatService>();
 
-        services.AddSignalR(hub =>
+        var signalR = services.AddSignalR(hub =>
             {
                 hub.AddFilter<ChatHubExceptionFilter>();
             })
             .AddJsonProtocol(json => json.PayloadSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+
+        // With a backplane, group and user sends are published to Redis and delivered by
+        // whichever instance holds the target connection.
+        var redisConnection = configuration.GetConnectionString("Redis");
+        var redis = configuration.GetSection(RedisOptions.SectionName).Get<RedisOptions>() ?? new RedisOptions();
+        if (!string.IsNullOrWhiteSpace(redisConnection) && redis.Backplane)
+        {
+            signalR.AddStackExchangeRedis(redisConnection, options =>
+                options.Configuration.ChannelPrefix = RedisChannel.Literal(redis.KeyPrefix));
+        }
 
         return services;
     }

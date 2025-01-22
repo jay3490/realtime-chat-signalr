@@ -100,8 +100,9 @@ public sealed class InMemoryPresenceTracker(TimeProvider clock, IOptions<Presenc
     {
         lock (_gate)
         {
+            var now = clock.GetUtcNow();
             IReadOnlyList<string> connections = _connections.TryGetValue(userName, out var leases)
-                ? leases.Keys.ToList()
+                ? leases.Where(l => l.Value > now).Select(l => l.Key).ToList()
                 : [];
             return Task.FromResult(connections);
         }
