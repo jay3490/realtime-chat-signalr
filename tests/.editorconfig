@@ -1,3 +1,6 @@
 [*.cs]
 # Test names read as sentences.
 dotnet_diagnostic.CA1707.severity = none
+
+# Test classes release resources through IAsyncLifetime.DisposeAsync.
+dotnet_diagnostic.CA1001.severity = none
