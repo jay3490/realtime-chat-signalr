@@ -114,6 +114,19 @@ type Panel = 'rooms' | 'channels' | 'people';
       </aside>
 
       <main class="room">
+        @switch (banner()) {
+          @case ('reconnecting') {
+            <div class="banner warn" role="status">Connection lost. Reconnecting...</div>
+          }
+          @case ('disconnected') {
+            <div class="banner error-banner" role="alert">
+              Disconnected from the chat server.
+              <button class="link" (click)="retry()" [disabled]="retrying()">
+                {{ retrying() ? 'Connecting...' : 'Retry' }}
+              </button>
+            </div>
+          }
+        }
         <app-room-view />
       </main>
     </div>
@@ -138,6 +151,18 @@ export class ChatShellComponent implements OnInit {
 
   protected readonly otherUsers = computed(() => this.users().filter((u) => u !== this.store.me()));
 
+  private readonly hasConnected = signal(false);
+  protected readonly retrying = signal(false);
+
+  /** Only warn about the connection once it has worked at least once. */
+  protected readonly banner = computed(() => {
+    const state = this.hub.state();
+    if (!this.hasConnected() || state === 'connected') {
+      return null;
+    }
+    return state === 'disconnected' ? 'disconnected' : 'reconnecting';
+  });
+
   constructor() {
     effect(() => {
       const id = this.roomId();
@@ -145,6 +170,12 @@ export class ChatShellComponent implements OnInit {
         void this.store.open(id).catch((e: unknown) => this.showError(e));
       } else {
         this.store.close();
+      }
+    });
+
+    effect(() => {
+      if (this.hub.state() === 'connected') {
+        this.hasConnected.set(true);
       }
     });
 
@@ -163,6 +194,17 @@ export class ChatShellComponent implements OnInit {
       await this.store.load();
     } catch (e) {
       this.showError(e);
+    }
+  }
+
+  protected async retry(): Promise<void> {
+    this.retrying.set(true);
+    try {
+      await this.hub.restart();
+    } catch (e) {
+      this.showError(e);
+    } finally {
+      this.retrying.set(false);
     }
   }
 

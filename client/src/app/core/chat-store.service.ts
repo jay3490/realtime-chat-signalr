@@ -104,6 +104,9 @@ export class ChatStore {
       this.onlineUsers.set(next);
     });
     this.hub.roomAdded$.pipe(takeUntilDestroyed(destroyRef)).subscribe((room) => this.upsertRoom(room));
+    this.hub.reconnected$.pipe(takeUntilDestroyed(destroyRef)).subscribe(() => {
+      void this.resync().catch((error: unknown) => console.warn('Resync after reconnect failed', error));
+    });
     this.hub.memberJoined$.pipe(takeUntilDestroyed(destroyRef)).subscribe((m) => {
       if (this.markersByRoom().has(m.roomId)) {
         this.upsertMarker(m.roomId, { userName: m.userName, lastReadMessageId: 0, readAt: null });
@@ -123,6 +126,42 @@ export class ChatStore {
     const [rooms, online] = await Promise.all([this.api.rooms(), this.api.onlineUsers()]);
     this.roomsById.set(new Map(rooms.map((r) => [r.id, r])));
     this.onlineUsers.set(new Set(online));
+  }
+
+  /**
+   * Brings state up to date after the connection was lost. Pushes sent while offline are
+   * gone, so this reloads what they would have changed: unread counts (and any room added
+   * meanwhile), messages after the newest one held for each loaded room, read markers of
+   * the open room and who is online.
+   */
+  async resync(): Promise<void> {
+    this.clearAllTyping();
+
+    const [counts, online] = await Promise.all([this.api.unreadCounts(), this.hub.onlineUsers()]);
+    this.onlineUsers.set(new Set(online));
+
+    if (counts.some((c) => !this.roomsById().has(c.roomId))) {
+      const rooms = await this.api.rooms();
+      this.roomsById.update((all) => new Map([...all, ...rooms.map((r) => [r.id, r] as const)]));
+    }
+    for (const count of counts) {
+      this.patchRoom(count.roomId, (room) => ({
+        ...room,
+        unreadCount: count.unreadCount,
+        lastReadMessageId: count.lastReadMessageId,
+      }));
+    }
+
+    for (const roomId of this.messagesByRoom().keys()) {
+      await this.catchUp(roomId);
+    }
+
+    const active = this.activeRoomId();
+    if (active && this.messagesByRoom().has(active)) {
+      const markers = await this.api.readMarkers(active);
+      this.markersByRoom.update((all) => new Map(all).set(active, markers));
+      await this.markActiveRead();
+    }
   }
 
   async open(roomId: string): Promise<void> {
@@ -202,11 +241,22 @@ export class ChatStore {
     this.roomsById.set(new Map());
     this.messagesByRoom.set(new Map());
     this.markersByRoom.set(new Map());
-    this.typingTimers.forEach((timers) => timers.forEach((t) => clearTimeout(t)));
-    this.typingTimers.clear();
-    this.typingByRoom.set(new Map());
+    this.clearAllTyping();
     this.activeRoomId.set(null);
     this.onlineUsers.set(new Set());
+  }
+
+  /** Fetches every message newer than the last one held for the room. */
+  private async catchUp(roomId: string): Promise<void> {
+    let page;
+    do {
+      const after = this.messagesByRoom().get(roomId)?.messages.at(-1)?.id ?? 0;
+      page = await this.api.history(roomId, { after, limit: 100 });
+      for (const message of page.messages) {
+        this.appendMessage(message);
+        this.patchRoom(roomId, (room) => ({ ...room, lastMessageId: Math.max(room.lastMessageId, message.id) }));
+      }
+    } while (page.hasMore);
   }
 
   private onMessage(message: Message): void {
@@ -292,6 +342,13 @@ export class ChatStore {
     clearTimeout(timers.get(userName));
     timers.delete(userName);
     this.publishTyping(roomId);
+  }
+
+  /** Indicators from before a disconnect may never receive their "stopped" event. */
+  private clearAllTyping(): void {
+    this.typingTimers.forEach((timers) => timers.forEach((t) => clearTimeout(t)));
+    this.typingTimers.clear();
+    this.typingByRoom.set(new Map());
   }
 
   private publishTyping(roomId: string): void {

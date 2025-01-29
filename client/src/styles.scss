@@ -291,6 +291,24 @@ app-room-view {
   flex-direction: column;
 }
 
+.banner {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.5rem 1.25rem;
+  font-size: 0.85rem;
+
+  &.warn {
+    background: #fff4dc;
+    color: #7a5200;
+  }
+
+  &.error-banner {
+    background: #fde8e6;
+    color: var(--danger);
+  }
+}
+
 .room-header {
   display: flex;
   align-items: center;
