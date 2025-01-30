@@ -13,23 +13,29 @@ using Microsoft.Extensions.DependencyInjection;
 namespace Chat.IntegrationTests;
 
 /// <summary>
-/// Hosts the real API in memory against a throwaway SQLite file and the in-memory presence
-/// tracker. Each test class instance gets its own factory, so state never leaks between tests.
+/// Hosts the real API in memory against a throwaway SQLite file. By default it uses the
+/// in-memory presence tracker and no backplane; passing a Redis connection string turns
+/// both on, and two factories sharing a database file and Redis behave like two replicas.
 /// </summary>
-public sealed class ChatApiFactory : WebApplicationFactory<Program>
+public sealed class ChatApiFactory(string? databasePath = null, string? redisConnection = null, string? redisPrefix = null)
+    : WebApplicationFactory<Program>
 {
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter() },
     };
 
-    private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"chat-tests-{Guid.NewGuid():N}.db");
+    private readonly bool _ownsDatabase = databasePath is null;
+    private readonly string _databasePath = databasePath ?? NewDatabasePath();
+
+    public static string NewDatabasePath() => Path.Combine(Path.GetTempPath(), $"chat-tests-{Guid.NewGuid():N}.db");
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
         builder.UseSetting("ConnectionStrings:Chat", $"Data Source={_databasePath};Pooling=False");
-        builder.UseSetting("ConnectionStrings:Redis", string.Empty);
+        builder.UseSetting("ConnectionStrings:Redis", redisConnection ?? string.Empty);
+        builder.UseSetting("Redis:KeyPrefix", redisPrefix ?? "chat:");
         builder.UseSetting("Database:Provider", "Sqlite");
         builder.UseSetting("Database:MigrateOnStartup", "true");
         builder.UseSetting("Auth:Jwt:SigningKey", "integration-test-signing-key-0123456789abcdef");
@@ -69,7 +75,7 @@ public sealed class ChatApiFactory : WebApplicationFactory<Program>
 
         // Pooling is off, but clear anyway so no handle keeps the file open on Windows.
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-        if (File.Exists(_databasePath))
+        if (_ownsDatabase && File.Exists(_databasePath))
         {
             File.Delete(_databasePath);
         }
