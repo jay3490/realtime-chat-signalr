@@ -1,0 +1,11 @@
+**/bin/
+**/obj/
+**/node_modules/
+**/dist/
+**/.angular/
+**/*.db
+.git/
+.github/
+.vs/
+.vscode/
+tests/

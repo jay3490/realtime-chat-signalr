@@ -1,0 +1,82 @@
+# Two API replicas behind nginx, sharing PostgreSQL and Redis.
+#
+#   docker compose up --build      then open http://localhost:8088
+#
+# The browser client connects with WebSockets only (skipNegotiation), so a connection
+# never needs to return to the instance that negotiated it and nginx can round-robin.
+# Messages reach users on the other replica through the Redis backplane.
+
+name: realtime-chat
+
+x-api-image: &api-image
+  image: realtime-chat-api:local
+  build:
+    context: .
+    dockerfile: src/Chat.Api/Dockerfile
+
+x-api-environment: &api-environment
+  ASPNETCORE_ENVIRONMENT: Production
+  ConnectionStrings__Chat: Host=postgres;Database=chat;Username=chat;Password=chat
+  ConnectionStrings__Redis: redis:6379
+  Database__Provider: Postgres
+  Redis__Backplane: "true"
+  # Demo settings: a fixed signing key and the password-less dev token endpoint.
+  # Override CHAT_JWT_SIGNING_KEY, and do not expose this stack publicly as-is.
+  Auth__Jwt__SigningKey: ${CHAT_JWT_SIGNING_KEY:-compose-demo-signing-key-change-me-0123456789}
+  Auth__DevTokens__Enabled: "true"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: chat
+      POSTGRES_USER: chat
+      POSTGRES_PASSWORD: chat
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chat -d chat"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Applies EF Core migrations once, before any API replica starts.
+  migrate:
+    <<: *api-image
+    command: ["--migrate"]
+    environment: *api-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *api-image
+    environment: *api-environment
+    deploy:
+      replicas: 2
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  web:
+    image: realtime-chat-web:local
+    build:
+      context: client
+    ports:
+      - "8088:80"
+    depends_on:
+      - api
+
+volumes:
+  postgres-data:
