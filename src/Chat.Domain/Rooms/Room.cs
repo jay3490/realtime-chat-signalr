@@ -56,7 +56,7 @@ public sealed partial class Room : AggregateRoot
         };
 
         room._members.Add(new RoomMember(room.Id, createdBy, now));
-        room.Raise(new RoomCreated(room.Id, room.Kind, room.Name, [createdBy]));
+        room.Raise(new RoomCreated(room.Id, room.Kind, room.Name, [createdBy], createdBy, now));
         return room;
     }
 
@@ -78,7 +78,7 @@ public sealed partial class Room : AggregateRoot
 
         room._members.Add(new RoomMember(room.Id, userName, now));
         room._members.Add(new RoomMember(room.Id, otherUserName, now));
-        room.Raise(new RoomCreated(room.Id, room.Kind, null, [userName, otherUserName]));
+        room.Raise(new RoomCreated(room.Id, room.Kind, null, [userName, otherUserName], userName, now));
         return room;
     }
 
@@ -118,13 +118,21 @@ public sealed partial class Room : AggregateRoot
         }
 
         _members.Add(new RoomMember(Id, userName, now));
-        Raise(new MemberJoined(Id, userName));
+        Raise(new MemberJoined(Id, userName, now));
     }
 
+    /// <summary>
+    /// Posts a message. <c>@name</c> mentions are resolved against the members loaded with
+    /// the aggregate, so a handler should load the memberships of the names in
+    /// <see cref="Mentions.Find"/> along with the sender's.
+    /// </summary>
     public Message Post(string sender, string body, DateTimeOffset now)
     {
         EnsureMember(sender);
-        return Message.Create(Id, sender, body, now);
+        var mentioned = Mentions.Find(body)
+            .Where(name => !string.Equals(name, sender, StringComparison.Ordinal) && HasMember(name))
+            .ToList();
+        return Message.Create(Id, sender, body, mentioned, now);
     }
 
     /// <summary>Advances the member's read marker; returns false if it was already at or past it.</summary>

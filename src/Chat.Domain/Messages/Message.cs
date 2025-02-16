@@ -24,7 +24,7 @@ public sealed class Message : AggregateRoot
 
     public DateTimeOffset SentAt { get; private set; }
 
-    internal static Message Create(Guid roomId, string sender, string body, DateTimeOffset now)
+    internal static Message Create(Guid roomId, string sender, string body, IReadOnlyList<string> mentions, DateTimeOffset now)
     {
         var text = body?.Trim() ?? string.Empty;
         if (text.Length == 0)
@@ -47,7 +47,7 @@ public sealed class Message : AggregateRoot
 
         // The id is assigned by the database, so the event carries the entity itself and
         // is only dispatched after the insert has completed.
-        message.Raise(new MessagePosted(message));
+        message.Raise(new MessagePosted(message, mentions));
         return message;
     }
 }

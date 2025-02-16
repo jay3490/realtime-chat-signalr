@@ -1,10 +1,12 @@
+using Chat.Domain.Common;
+
 namespace Chat.Domain.Users;
 
 /// <summary>
 /// A person who has signed in at least once. Only the name is kept; authentication is
 /// handled outside the domain.
 /// </summary>
-public sealed class User
+public sealed class User : AggregateRoot
 {
     private User()
     {
@@ -16,12 +18,20 @@ public sealed class User
 
     public DateTimeOffset LastSeenAt { get; private set; }
 
-    public static User Register(string name, DateTimeOffset now) => new()
+    public static User Register(string name, DateTimeOffset now)
     {
-        Name = UserName.Normalize(name),
-        FirstSeenAt = now,
-        LastSeenAt = now,
-    };
+        var user = new User
+        {
+            Name = UserName.Normalize(name),
+            FirstSeenAt = now,
+            LastSeenAt = now,
+        };
+
+        user.Raise(new UserRegistered(user.Name, now));
+        return user;
+    }
 
     public void Touch(DateTimeOffset now) => LastSeenAt = now;
 }
+
+public sealed record UserRegistered(string UserName, DateTimeOffset RegisteredAt) : IDomainEvent;

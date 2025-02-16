@@ -1,6 +1,7 @@
 using Chat.Application.Abstractions;
 using Chat.Application.Common;
 using Chat.Application.Persistence;
+using Chat.Domain.Messages;
 using Microsoft.EntityFrameworkCore;
 
 namespace Chat.Application.Messages;
@@ -12,10 +13,11 @@ internal sealed class SendMessageHandler(IChatDbContext db, TimeProvider clock)
 {
     public async Task<MessageDto> HandleAsync(SendMessageCommand command, CancellationToken cancellationToken)
     {
-        // Only the sender's membership is needed to check the invariant, so the rest of
-        // the member list is not loaded.
+        // Only the sender's membership (to check the invariant) and those of anyone
+        // mentioned (to resolve the mentions) are needed, so the rest are not loaded.
+        var mentioned = Mentions.Find(command.Body).ToArray();
         var room = await db.Rooms
-            .Include(r => r.Members.Where(m => m.UserName == command.Sender))
+            .Include(r => r.Members.Where(m => m.UserName == command.Sender || mentioned.Contains(m.UserName)))
             .SingleOrDefaultAsync(r => r.Id == command.RoomId, cancellationToken)
             ?? throw new NotFoundException("Room not found.");
 

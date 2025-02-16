@@ -6,9 +6,11 @@ public sealed record RoomCreated(
     Guid RoomId,
     RoomKind Kind,
     string? Name,
-    IReadOnlyList<string> Members) : IDomainEvent;
+    IReadOnlyList<string> Members,
+    string CreatedBy,
+    DateTimeOffset CreatedAt) : IDomainEvent;
 
-public sealed record MemberJoined(Guid RoomId, string UserName) : IDomainEvent;
+public sealed record MemberJoined(Guid RoomId, string UserName, DateTimeOffset JoinedAt) : IDomainEvent;
 
 public sealed record MessagesRead(
     Guid RoomId,

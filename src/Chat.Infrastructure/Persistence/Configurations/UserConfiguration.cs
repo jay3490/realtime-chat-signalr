@@ -11,5 +11,6 @@ internal sealed class UserConfiguration : IEntityTypeConfiguration<User>
         builder.ToTable("Users");
         builder.HasKey(u => u.Name);
         builder.Property(u => u.Name).HasMaxLength(UserName.MaxLength);
+        builder.Ignore(u => u.DomainEvents);
     }
 }
