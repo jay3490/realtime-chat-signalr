@@ -1,4 +1,5 @@
 using Chat.Application.Persistence;
+using Chat.Infrastructure.Outbox;
 using Chat.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -25,6 +26,7 @@ public static class DependencyInjection
             readConnection = writeConnection;
         }
 
+        services.AddSingleton<OutboxSignal>();
         services.AddDbContext<ChatDbContext>(db => UseProvider(db, options.Provider, writeConnection));
         services.AddScoped<IChatDbContext>(sp => sp.GetRequiredService<ChatDbContext>());
 

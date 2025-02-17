@@ -21,7 +21,8 @@ namespace Chat.Infrastructure.Persistence;
 /// </summary>
 public sealed class ChatDbContext(
     DbContextOptions<ChatDbContext> options,
-    IDomainEventDispatcher domainEvents) : DbContext(options), IChatDbContext
+    IDomainEventDispatcher domainEvents,
+    OutboxSignal? outboxSignal = null) : DbContext(options), IChatDbContext
 {
     private const int SqliteConstraintUnique = 2067;
 
@@ -93,6 +94,10 @@ public sealed class ChatDbContext(
             if (transaction is not null)
             {
                 await transaction.CommitAsync(cancellationToken);
+                if (outbox.Count > 0)
+                {
+                    outboxSignal?.Notify();
+                }
             }
 
             return written;
