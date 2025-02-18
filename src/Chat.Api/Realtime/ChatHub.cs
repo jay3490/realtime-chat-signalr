@@ -73,6 +73,12 @@ public sealed class ChatHub(
         return message;
     }
 
+    public Task<MessageDto> EditMessage(Guid roomId, long messageId, string body) =>
+        dispatcher.SendAsync(new EditMessageCommand(roomId, messageId, UserName, body), Context.ConnectionAborted);
+
+    public Task<bool> DeleteMessage(Guid roomId, long messageId) =>
+        dispatcher.SendAsync(new DeleteMessageCommand(roomId, messageId, UserName), Context.ConnectionAborted);
+
     public Task<bool> MarkRead(Guid roomId, long messageId) =>
         dispatcher.SendAsync(new MarkReadCommand(roomId, UserName, messageId), Context.ConnectionAborted);
 

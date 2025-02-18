@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using Chat.Api.Realtime;
 using Chat.Application.Messages;
 using Chat.Application.Messages.Queries;
@@ -189,6 +190,42 @@ public sealed class ChatHubTests : IAsyncLifetime
         Assert.True(latest.HasMore);
         Assert.Equal(["message 1"], older.Messages.Select(m => m.Body));
         Assert.Equal(3, Assert.Single(bobRooms).UnreadCount);
+    }
+
+    [Fact]
+    public async Task Edits_and_deletions_are_pushed_to_the_room()
+    {
+        var alice = await _factory.SignInAsync("alice");
+        var bob = await _factory.SignInAsync("bob");
+        var room = await alice.PostAsync<RoomSummaryDto>("/api/direct", new { userName = "bob" });
+        var aliceHub = await ConnectAsync(alice);
+        var bobHub = await ConnectAsync(bob);
+        var bobEdits = new HubEvents<MessageDto>(bobHub, nameof(IChatClient.MessageEdited));
+        var bobDeletions = new HubEvents<MessageDeletedDto>(bobHub, nameof(IChatClient.MessageDeleted));
+
+        var sent = await aliceHub.InvokeAsync<MessageDto>("SendMessage", room.Id, "teh plan");
+        var edited = await aliceHub.InvokeAsync<MessageDto>("EditMessage", room.Id, sent.Id, "the plan");
+        var pushed = await bobEdits.NextAsync();
+
+        Assert.Equal((sent.Id, "the plan", 2), (pushed.Id, pushed.Body, pushed.Revision));
+        Assert.Equal(edited.EditedAt, pushed.EditedAt);
+
+        var deleted = await alice.Http.DeleteAsync($"/api/rooms/{room.Id}/messages/{sent.Id}");
+        Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+        Assert.Equal(sent.Id, (await bobDeletions.NextAsync()).MessageId);
+    }
+
+    [Fact]
+    public async Task Only_the_author_may_edit_a_message()
+    {
+        var alice = await _factory.SignInAsync("alice");
+        var bob = await _factory.SignInAsync("bob");
+        var room = await alice.PostAsync<RoomSummaryDto>("/api/direct", new { userName = "bob" });
+        var sent = await alice.PostAsync<MessageDto>($"/api/rooms/{room.Id}/messages", new { body = "mine" });
+
+        var response = await bob.Http.PutAsJsonAsync($"/api/rooms/{room.Id}/messages/{sent.Id}", new { body = "ours" });
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
     private async Task<HubConnection> ConnectAsync(TestUser user)

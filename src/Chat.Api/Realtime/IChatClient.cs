@@ -20,6 +20,10 @@ public interface IChatClient
 {
     Task MessageReceived(MessageDto message);
 
+    Task MessageEdited(MessageDto message);
+
+    Task MessageDeleted(MessageDeletedDto deleted);
+
     Task ReadReceipt(ReadReceiptDto receipt);
 
     Task UserTyping(TypingDto typing);

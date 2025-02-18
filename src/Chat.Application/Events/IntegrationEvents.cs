@@ -25,6 +25,18 @@ public static class IntegrationEvents
             posted.Message.Body,
             posted.Mentions,
             posted.Message.SentAt),
+        Domain.Messages.MessageEdited edited => new Contracts.MessageEdited(
+            edited.Message.RoomId,
+            edited.Message.Id,
+            edited.Message.Sender,
+            edited.Message.Body,
+            edited.Message.Revision,
+            edited.Message.EditedAt ?? throw new InvalidOperationException("An edited message has no edit time.")),
+        Domain.Messages.MessageDeleted deleted => new Contracts.MessageDeleted(
+            deleted.Message.RoomId,
+            deleted.Message.Id,
+            deleted.Message.Sender,
+            deleted.Message.DeletedAt ?? throw new InvalidOperationException("A deleted message has no deletion time.")),
         Domain.Users.UserRegistered registered => new Contracts.UserRegistered(registered.UserName, registered.RegisteredAt),
         _ => null,
     };

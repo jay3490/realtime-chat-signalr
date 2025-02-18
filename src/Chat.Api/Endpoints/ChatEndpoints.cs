@@ -23,6 +23,8 @@ internal static class ChatEndpoints
 
     public sealed record SendMessageRequest(string Body);
 
+    public sealed record EditMessageRequest(string Body);
+
     public sealed record MarkReadRequest(long MessageId);
 
     public static IEndpointRouteBuilder MapChatEndpoints(this IEndpointRouteBuilder app)
@@ -48,6 +50,17 @@ internal static class ChatEndpoints
         api.MapPost("/rooms/{roomId:guid}/messages", (
                 Guid roomId, SendMessageRequest request, ClaimsPrincipal user, IDispatcher dispatcher, CancellationToken ct) =>
             dispatcher.SendAsync(new SendMessageCommand(roomId, user.GetUserName(), request.Body), ct));
+
+        api.MapPut("/rooms/{roomId:guid}/messages/{messageId:long}", (
+                Guid roomId, long messageId, EditMessageRequest request, ClaimsPrincipal user, IDispatcher dispatcher, CancellationToken ct) =>
+            dispatcher.SendAsync(new EditMessageCommand(roomId, messageId, user.GetUserName(), request.Body), ct));
+
+        api.MapDelete("/rooms/{roomId:guid}/messages/{messageId:long}", async (
+                Guid roomId, long messageId, ClaimsPrincipal user, IDispatcher dispatcher, CancellationToken ct) =>
+            {
+                await dispatcher.SendAsync(new DeleteMessageCommand(roomId, messageId, user.GetUserName()), ct);
+                return Results.NoContent();
+            });
 
         api.MapGet("/rooms/{roomId:guid}/read-markers", (Guid roomId, ClaimsPrincipal user, IDispatcher dispatcher, CancellationToken ct) =>
             dispatcher.QueryAsync(new GetReadMarkersQuery(roomId, user.GetUserName()), ct));

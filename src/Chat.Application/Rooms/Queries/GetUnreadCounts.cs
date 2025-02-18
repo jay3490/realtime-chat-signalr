@@ -21,7 +21,8 @@ internal sealed class GetUnreadCountsHandler(IChatReadDbContext read)
             .Select(member => new UnreadCountDto(
                 member.RoomId,
                 read.Messages.Count(m =>
-                    m.RoomId == member.RoomId && m.Id > member.LastReadMessageId && m.Sender != query.UserName),
+                    m.RoomId == member.RoomId && m.Id > member.LastReadMessageId && m.Sender != query.UserName
+                    && m.DeletedAt == null),
                 member.LastReadMessageId))
             .ToListAsync(cancellationToken);
 }

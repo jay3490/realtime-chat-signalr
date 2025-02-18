@@ -53,7 +53,7 @@ internal sealed class GetMessageHistoryHandler(IChatReadDbContext read)
                 .Where(m => m.Id > after)
                 .OrderBy(m => m.Id)
                 .Take(take)
-                .Select(m => new MessageDto(m.Id, m.RoomId, m.Sender, m.Body, m.SentAt))
+                .Select(m => new MessageDto(m.Id, m.RoomId, m.Sender, m.Body, m.SentAt, m.Revision, m.EditedAt, m.DeletedAt != null))
                 .ToListAsync(cancellationToken);
         }
         else
@@ -63,7 +63,7 @@ internal sealed class GetMessageHistoryHandler(IChatReadDbContext read)
                 .Where(m => m.Id < before)
                 .OrderByDescending(m => m.Id)
                 .Take(take)
-                .Select(m => new MessageDto(m.Id, m.RoomId, m.Sender, m.Body, m.SentAt))
+                .Select(m => new MessageDto(m.Id, m.RoomId, m.Sender, m.Body, m.SentAt, m.Revision, m.EditedAt, m.DeletedAt != null))
                 .ToListAsync(cancellationToken);
         }
 

@@ -18,6 +18,8 @@ internal sealed class HubNotifications(
     IPresenceTracker presence,
     IDispatcher dispatcher)
     : IDomainEventHandler<MessagePosted>,
+      IDomainEventHandler<MessageEdited>,
+      IDomainEventHandler<MessageDeleted>,
       IDomainEventHandler<MessagesRead>,
       IDomainEventHandler<RoomCreated>,
       IDomainEventHandler<MemberJoined>
@@ -26,6 +28,16 @@ internal sealed class HubNotifications(
     {
         var message = MessageDto.From(domainEvent.Message);
         return hub.Clients.Group(ChatHub.RoomGroup(message.RoomId)).MessageReceived(message);
+    }
+
+    public Task HandleAsync(MessageEdited domainEvent, CancellationToken cancellationToken) =>
+        hub.Clients.Group(ChatHub.RoomGroup(domainEvent.Message.RoomId)).MessageEdited(MessageDto.From(domainEvent.Message));
+
+    public Task HandleAsync(MessageDeleted domainEvent, CancellationToken cancellationToken)
+    {
+        var message = domainEvent.Message;
+        return hub.Clients.Group(ChatHub.RoomGroup(message.RoomId))
+            .MessageDeleted(new MessageDeletedDto(message.RoomId, message.Id, message.DeletedAt!.Value));
     }
 
     public Task HandleAsync(MessagesRead domainEvent, CancellationToken cancellationToken) =>

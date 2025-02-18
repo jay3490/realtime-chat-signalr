@@ -15,6 +15,8 @@ internal sealed class MessageConfiguration : IEntityTypeConfiguration<Message>
         builder.Property(m => m.Id).ValueGeneratedOnAdd();
         builder.Property(m => m.Sender).HasMaxLength(UserName.MaxLength).IsRequired();
         builder.Property(m => m.Body).HasMaxLength(Message.MaxBodyLength).IsRequired();
+        builder.Property(m => m.Revision).HasDefaultValue(1);
+        builder.Ignore(m => m.IsDeleted);
         builder.Ignore(m => m.DomainEvents);
 
         builder.HasOne<Room>()

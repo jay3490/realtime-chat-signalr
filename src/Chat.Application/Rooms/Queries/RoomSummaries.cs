@@ -61,7 +61,7 @@ internal sealed class RoomSummaryHandlers(IChatReadDbContext read)
                     .Where(other => other.RoomId == room.Id && other.UserName != userName)
                     .Select(other => other.UserName)
                     .First(),
-            read.Messages.Count(m => m.RoomId == room.Id && m.Id > member.LastReadMessageId && m.Sender != userName),
+            read.Messages.Count(m => m.RoomId == room.Id && m.Id > member.LastReadMessageId && m.Sender != userName && m.DeletedAt == null),
             read.Messages.Where(m => m.RoomId == room.Id).Max(m => (long?)m.Id) ?? 0,
             member.LastReadMessageId);
 }
