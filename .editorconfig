@@ -24,3 +24,6 @@ dotnet_diagnostic.CA1711.severity = none
 
 [src/Chat.Infrastructure/Persistence/Migrations/*.cs]
 generated_code = true
+
+[src/Chat.Infrastructure/ReadModel/Migrations/*.cs]
+generated_code = true

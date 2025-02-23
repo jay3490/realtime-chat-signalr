@@ -8,5 +8,7 @@ namespace Chat.Infrastructure.Persistence;
 internal static class ChatModel
 {
     public static void Configure(ModelBuilder modelBuilder) =>
-        modelBuilder.ApplyConfigurationsFromAssembly(typeof(ChatModel).Assembly);
+        modelBuilder.ApplyConfigurationsFromAssembly(
+            typeof(ChatModel).Assembly,
+            type => type.Namespace == typeof(Configurations.RoomConfiguration).Namespace);
 }

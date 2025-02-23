@@ -24,9 +24,7 @@ internal sealed class RoomConfiguration : IEntityTypeConfiguration<Room>
             .OnDelete(DeleteBehavior.Cascade);
         builder.Navigation(r => r.Members).UsePropertyAccessMode(PropertyAccessMode.Field);
 
-        builder.HasData(
-            SeedChannel(SeedData.GeneralChannelId, "general"),
-            SeedChannel(SeedData.RandomChannelId, "random"));
+        builder.HasData(SeedData.Channels.Select(c => SeedChannel(c.Id, c.Name)));
     }
 
     private static object SeedChannel(Guid id, string name) => new
@@ -46,4 +44,11 @@ internal static class SeedData
     public static readonly Guid GeneralChannelId = new("6f1c2a9e-0c6b-4d8e-9a51-6b1a3c2e7f01");
     public static readonly Guid RandomChannelId = new("6f1c2a9e-0c6b-4d8e-9a51-6b1a3c2e7f02");
     public static readonly DateTimeOffset CreatedAt = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+    /// <summary>Channels that exist from the start, in both the write model and the read model.</summary>
+    public static readonly IReadOnlyList<(Guid Id, string Name)> Channels =
+    [
+        (GeneralChannelId, "general"),
+        (RandomChannelId, "random"),
+    ];
 }
