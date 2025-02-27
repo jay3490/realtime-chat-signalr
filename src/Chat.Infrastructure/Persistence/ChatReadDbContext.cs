@@ -1,25 +1,26 @@
 using Chat.Application.Persistence;
-using Chat.Domain.Messages;
-using Chat.Domain.Rooms;
-using Chat.Domain.Users;
+using Chat.Application.ReadModel;
+using Chat.Infrastructure.ReadModel;
 using Microsoft.EntityFrameworkCore;
 
 namespace Chat.Infrastructure.Persistence;
 
 /// <summary>
-/// Read-only context for the query side. It shares the write model's mapping but tracks
-/// nothing, refuses to save and can be pointed at a separate connection (for example a
-/// streaming replica) through <c>ConnectionStrings:ChatRead</c>.
+/// Read-only context for the query side, over the read model the projection maintains. It
+/// shares <see cref="ReadModelDbContext"/>'s mapping but tracks nothing and refuses to save:
+/// only the projection writes the read model.
 /// </summary>
 public sealed class ChatReadDbContext(DbContextOptions<ChatReadDbContext> options) : DbContext(options), IChatReadDbContext
 {
-    public IQueryable<Room> Rooms => Set<Room>();
+    public IQueryable<RoomView> Rooms => Set<RoomView>();
 
-    public IQueryable<RoomMember> RoomMembers => Set<RoomMember>();
+    public IQueryable<MemberView> Members => Set<MemberView>();
 
-    public IQueryable<Message> Messages => Set<Message>();
+    public IQueryable<MessageView> Messages => Set<MessageView>();
 
-    public IQueryable<User> Users => Set<User>();
+    public IQueryable<MessageRevisionView> MessageRevisions => Set<MessageRevisionView>();
+
+    public IQueryable<UserView> Users => Set<UserView>();
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess) =>
         throw new InvalidOperationException("The read context is read-only.");
@@ -30,5 +31,5 @@ public sealed class ChatReadDbContext(DbContextOptions<ChatReadDbContext> option
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder) =>
         optionsBuilder.UseQueryTrackingBehavior(QueryTrackingBehavior.NoTracking);
 
-    protected override void OnModelCreating(ModelBuilder modelBuilder) => ChatModel.Configure(modelBuilder);
+    protected override void OnModelCreating(ModelBuilder modelBuilder) => ReadModelMapping.Configure(modelBuilder, Database);
 }

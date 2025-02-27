@@ -1,4 +1,6 @@
 using Chat.Contracts;
+using Chat.Infrastructure.EventLog;
+using Chat.Infrastructure.Persistence;
 using Chat.Infrastructure.ReadModel;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -15,6 +17,7 @@ public sealed class SqliteReadModel : IAsyncDisposable
 {
     private readonly SqliteConnection _connection;
     private readonly Dictionary<string, long> _nextOffset = new(StringComparer.Ordinal);
+    private long _lastOutboxId;
 
     private SqliteReadModel(SqliteConnection connection) => _connection = connection;
 
@@ -36,6 +39,29 @@ public sealed class SqliteReadModel : IAsyncDisposable
 
     public ReadModelDbContext NewContext() =>
         new(new DbContextOptionsBuilder<ReadModelDbContext>().UseSqlite(_connection).Options);
+
+    /// <summary>A context for the query side, as the API would resolve it.</summary>
+    public ChatReadDbContext NewQueryContext() =>
+        new(new DbContextOptionsBuilder<ChatReadDbContext>().UseSqlite(_connection).Options);
+
+    /// <summary>
+    /// Projects every outbox row of the write database not seen yet, the way the relay and
+    /// the projection would, so query handlers can be tested against commands' real effects.
+    /// </summary>
+    public async Task CatchUpAsync(SqliteChatDatabase write)
+    {
+        ArgumentNullException.ThrowIfNull(write);
+        await using var db = write.NewContext();
+        var pending = await db.OutboxMessages
+            .Where(m => m.Id > _lastOutboxId)
+            .OrderBy(m => m.Id)
+            .ToListAsync();
+        foreach (var row in pending)
+        {
+            await ProjectAsync(Append(ChatEventSerializer.Deserialize(row.Payload)));
+            _lastOutboxId = row.Id;
+        }
+    }
 
     public ReadModelProjector NewProjector(ReadModelDbContext db) =>
         new(db, Clock, NullLogger<ReadModelProjector>.Instance);

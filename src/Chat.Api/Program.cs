@@ -6,14 +6,23 @@ using Chat.Api.Realtime;
 using Chat.Application;
 using Chat.Infrastructure;
 using Chat.Infrastructure.EventLog;
+using Chat.Infrastructure.ReadModel;
 using Chat.Infrastructure.Presence;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddChatApplication(typeof(Program).Assembly);
 builder.Services.AddChatPersistence(builder.Configuration);
+builder.Services.AddChatReadModel(builder.Configuration);
 builder.Services.AddChatEventLog(builder.Configuration);
 builder.Services.AddOutboxRelay(builder.Configuration);
+
+// With Kafka the Chat.Projections service maintains the read model. With the in-memory log
+// only this process can read the events, so it runs the projection itself.
+if (!builder.Configuration.GetSection(KafkaOptions.SectionName).Get<KafkaOptions>()?.IsConfigured ?? true)
+{
+    builder.Services.AddReadModelProjection();
+}
 builder.Services.AddChatAuthentication(builder.Configuration);
 builder.Services.AddChatPresence(builder.Configuration);
 builder.Services.AddChatRealtime(builder.Configuration);

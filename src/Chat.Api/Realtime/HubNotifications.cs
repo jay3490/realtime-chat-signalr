@@ -63,7 +63,7 @@ internal sealed class HubNotifications(
     {
         await AddUserToRoomGroupAsync(domainEvent.UserName, domainEvent.RoomId, cancellationToken);
 
-        var summary = await dispatcher.QueryAsync(new GetRoomSummaryQuery(domainEvent.RoomId, domainEvent.UserName), cancellationToken);
+        var summary = await dispatcher.QueryAsync(new GetCurrentRoomSummaryQuery(domainEvent.RoomId, domainEvent.UserName), cancellationToken);
         await hub.Clients.User(domainEvent.UserName).RoomAdded(summary);
         await hub.Clients.Group(ChatHub.RoomGroup(domainEvent.RoomId))
             .MemberJoined(new MemberJoinedDto(domainEvent.RoomId, domainEvent.UserName));

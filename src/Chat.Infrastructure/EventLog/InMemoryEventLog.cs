@@ -80,3 +80,53 @@ public sealed class InMemoryEventPublisher(InMemoryEventLog log) : IEventPublish
         return Task.FromResult(new PublishResult(batch.Count));
     }
 }
+
+/// <summary>
+/// Reads the <see cref="InMemoryEventLog"/>. Every stream has a single partition, 0, and
+/// progress is held by the consumer itself.
+/// </summary>
+public sealed class InMemoryEventConsumer(InMemoryEventLog log, ConsumerSettings settings) : IEventLogConsumer
+{
+    private readonly Dictionary<string, long> _positions = new(StringComparer.Ordinal);
+
+    public void Subscribe(IReadOnlyCollection<string> streams)
+    {
+        ArgumentNullException.ThrowIfNull(streams);
+        foreach (var stream in streams)
+        {
+            // Without a resume callback a new consumer starts at the end, as a new Kafka group does.
+            _positions[stream] = settings.ResumeAt is null
+                ? log.Length(stream)
+                : settings.ResumeAt(stream, 0) ?? 0;
+        }
+    }
+
+    public ConsumedEvent? Consume(TimeSpan timeout)
+    {
+        var next = log.Next(_positions, timeout);
+        if (next is null)
+        {
+            return null;
+        }
+
+        _positions[next.Stream] = next.Offset + 1;
+        return ConsumedEvent.Parse(next.Stream, 0, next.Offset, next.Payload);
+    }
+
+    public void Commit(ConsumedEvent consumed)
+    {
+    }
+
+    public void Close()
+    {
+    }
+
+    public void Dispose()
+    {
+    }
+}
+
+public sealed class InMemoryEventConsumerFactory(InMemoryEventLog log) : IEventLogConsumerFactory
+{
+    public IEventLogConsumer Create(ConsumerSettings settings) => new InMemoryEventConsumer(log, settings);
+}

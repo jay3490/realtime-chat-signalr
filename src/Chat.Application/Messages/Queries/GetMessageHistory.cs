@@ -11,8 +11,8 @@ public sealed record MessagePage(IReadOnlyList<MessageDto> Messages, bool HasMor
 
 /// <summary>
 /// Keyset-paged history. With <paramref name="Before"/> (or neither cursor) it pages
-/// backwards from the newest message; with <paramref name="After"/> it pages forwards, which
-/// is how a client catches up on what it missed while disconnected.
+/// backwards from the newest message; with <paramref name="After"/> it pages forwards.
+/// Deleted messages are returned as tombstones so clients can remove them from view.
 /// </summary>
 public sealed record GetMessageHistoryQuery(
     Guid RoomId,
@@ -25,7 +25,7 @@ public sealed record GetMessageHistoryQuery(
     public const int MaxLimit = 100;
 }
 
-internal sealed class GetMessageHistoryHandler(IChatReadDbContext read)
+internal sealed class GetMessageHistoryHandler(IChatDbContext db, IChatReadDbContext read)
     : IQueryHandler<GetMessageHistoryQuery, MessagePage>
 {
     public async Task<MessagePage> HandleAsync(GetMessageHistoryQuery query, CancellationToken cancellationToken)
@@ -40,32 +40,19 @@ internal sealed class GetMessageHistoryHandler(IChatReadDbContext read)
             throw new RequestValidationException($"'limit' must be between 1 and {GetMessageHistoryQuery.MaxLimit}.");
         }
 
-        await read.EnsureMemberAsync(query.RoomId, query.UserName, cancellationToken);
+        await db.EnsureMemberAsync(query.RoomId, query.UserName, cancellationToken);
 
         var inRoom = read.Messages.Where(m => m.RoomId == query.RoomId);
+        var before = query.Before ?? long.MaxValue;
+        var ordered = query.After is { } after
+            ? inRoom.Where(m => m.Id > after).OrderBy(m => m.Id)
+            : inRoom.Where(m => m.Id < before).OrderByDescending(m => m.Id);
 
         // One extra row tells us whether another page exists without a COUNT query.
-        var take = query.Limit + 1;
-        List<MessageDto> rows;
-        if (query.After is { } after)
-        {
-            rows = await inRoom
-                .Where(m => m.Id > after)
-                .OrderBy(m => m.Id)
-                .Take(take)
-                .Select(m => new MessageDto(m.Id, m.RoomId, m.Sender, m.Body, m.SentAt, m.Revision, m.EditedAt, m.DeletedAt != null))
-                .ToListAsync(cancellationToken);
-        }
-        else
-        {
-            var before = query.Before ?? long.MaxValue;
-            rows = await inRoom
-                .Where(m => m.Id < before)
-                .OrderByDescending(m => m.Id)
-                .Take(take)
-                .Select(m => new MessageDto(m.Id, m.RoomId, m.Sender, m.Body, m.SentAt, m.Revision, m.EditedAt, m.DeletedAt != null))
-                .ToListAsync(cancellationToken);
-        }
+        var rows = await ordered
+            .Take(query.Limit + 1)
+            .Select(m => new MessageDto(m.Id, m.RoomId, m.Sender, m.Body, m.SentAt, m.Revision, m.EditedAt, m.DeletedAt != null))
+            .ToListAsync(cancellationToken);
 
         var hasMore = rows.Count > query.Limit;
         var page = rows.Take(query.Limit).OrderBy(m => m.Id).ToList();

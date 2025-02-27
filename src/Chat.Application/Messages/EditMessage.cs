@@ -43,16 +43,7 @@ internal sealed class MessageChangeHandlers(IChatDbContext db, TimeProvider cloc
         Guid roomId, long messageId, string userName, string action, CancellationToken cancellationToken)
     {
         // Membership is checked first so that non-members cannot tell which ids exist.
-        var isMember = await db.Rooms
-            .Where(r => r.Id == roomId)
-            .SelectMany(r => r.Members)
-            .AnyAsync(m => m.UserName == userName, cancellationToken);
-        if (!isMember)
-        {
-            throw await db.Rooms.AnyAsync(r => r.Id == roomId, cancellationToken)
-                ? new ForbiddenException("You are not a member of this room.")
-                : new NotFoundException("Room not found.");
-        }
+        await db.EnsureMemberAsync(roomId, userName, cancellationToken);
 
         var message = await db.Messages.SingleOrDefaultAsync(m => m.Id == messageId && m.RoomId == roomId, cancellationToken)
             ?? throw new NotFoundException("Message not found in this room.");

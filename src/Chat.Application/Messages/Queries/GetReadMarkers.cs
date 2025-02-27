@@ -10,14 +10,14 @@ public sealed record ReadMarkerDto(string UserName, long LastReadMessageId, Date
 /// <summary>Read markers for every member of a room; the client uses them to render "seen by".</summary>
 public sealed record GetReadMarkersQuery(Guid RoomId, string UserName) : IQuery<IReadOnlyList<ReadMarkerDto>>;
 
-internal sealed class GetReadMarkersHandler(IChatReadDbContext read)
+internal sealed class GetReadMarkersHandler(IChatDbContext db, IChatReadDbContext read)
     : IQueryHandler<GetReadMarkersQuery, IReadOnlyList<ReadMarkerDto>>
 {
     public async Task<IReadOnlyList<ReadMarkerDto>> HandleAsync(GetReadMarkersQuery query, CancellationToken cancellationToken)
     {
-        await read.EnsureMemberAsync(query.RoomId, query.UserName, cancellationToken);
+        await db.EnsureMemberAsync(query.RoomId, query.UserName, cancellationToken);
 
-        return await read.RoomMembers
+        return await read.Members
             .Where(m => m.RoomId == query.RoomId)
             .OrderBy(m => m.UserName)
             .Select(m => new ReadMarkerDto(m.UserName, m.LastReadMessageId, m.LastReadAt))

@@ -3,7 +3,8 @@ using Microsoft.EntityFrameworkCore;
 namespace Chat.Infrastructure.Persistence;
 
 /// <summary>
-/// The mapping shared by the write and read contexts, so both see the same schema.
+/// The write model's mapping: the configurations in <c>Persistence.Configurations</c>. The
+/// read model has its own, in <c>ReadModel.Configurations</c>.
 /// </summary>
 internal static class ChatModel
 {

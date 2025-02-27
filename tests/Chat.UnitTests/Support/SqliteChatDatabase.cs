@@ -42,10 +42,6 @@ public sealed class SqliteChatDatabase : IAsyncDisposable
     public ChatDbContext NewContext() =>
         new(new DbContextOptionsBuilder<ChatDbContext>().UseSqlite(_connection).Options, Events);
 
-    /// <summary>A context for the query side, as the API would resolve it.</summary>
-    public ChatReadDbContext NewReadContext() =>
-        new(new DbContextOptionsBuilder<ChatReadDbContext>().UseSqlite(_connection).Options);
-
     public async Task RegisterUsersAsync(params string[] names)
     {
         await using var db = NewContext();

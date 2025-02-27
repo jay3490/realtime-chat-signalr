@@ -9,14 +9,20 @@ using Chat.UnitTests.Support;
 
 namespace Chat.UnitTests.Queries;
 
+/// <summary>
+/// Commands run against the write database; their outbox is then projected into a separate
+/// read database, and the query handlers read that, as they do in the API.
+/// </summary>
 public sealed class QueryTests : IAsyncLifetime
 {
     private SqliteChatDatabase _database = null!;
+    private SqliteReadModel _readModel = null!;
     private Guid _team;
 
     public async Task InitializeAsync()
     {
         _database = await SqliteChatDatabase.CreateAsync();
+        _readModel = await SqliteReadModel.CreateAsync();
         await _database.RegisterUsersAsync("alice", "bob", "carol");
 
         await using var db = _database.NewContext();
@@ -24,7 +30,11 @@ public sealed class QueryTests : IAsyncLifetime
         await new JoinChannelHandler(db, _database.Clock).HandleAsync(new JoinChannelCommand(_team, "bob"), default);
     }
 
-    public async Task DisposeAsync() => await _database.DisposeAsync();
+    public async Task DisposeAsync()
+    {
+        await _readModel.DisposeAsync();
+        await _database.DisposeAsync();
+    }
 
     [Fact]
     public async Task Unread_counts_exclude_own_messages_and_anything_already_read()
@@ -34,10 +44,11 @@ public sealed class QueryTests : IAsyncLifetime
         await SendAsync(_team, "alice", "three");
         await SendAsync(_team, "bob", "bob's own message");
         await MarkReadAsync(_team, "bob", two.Id);
+        await _readModel.CatchUpAsync(_database);
 
-        var bobRooms = await new RoomSummaryHandlers(_database.NewReadContext())
+        var bobRooms = await new RoomSummaryHandlers(_readModel.NewQueryContext())
             .HandleAsync(new GetMyRoomsQuery("bob"), default);
-        var counts = await new GetUnreadCountsHandler(_database.NewReadContext())
+        var counts = await new GetUnreadCountsHandler(_readModel.NewQueryContext())
             .HandleAsync(new GetUnreadCountsQuery("bob"), default);
 
         var team = Assert.Single(bobRooms);
@@ -58,12 +69,30 @@ public sealed class QueryTests : IAsyncLifetime
 
         await SendAsync(_team, "bob", "older");
         await SendAsync(direct, "carol", "newer");
+        await _readModel.CatchUpAsync(_database);
 
-        var rooms = await new RoomSummaryHandlers(_database.NewReadContext())
+        var rooms = await new RoomSummaryHandlers(_readModel.NewQueryContext())
             .HandleAsync(new GetMyRoomsQuery("alice"), default);
 
         Assert.Equal([(RoomKind.Direct, "carol"), (RoomKind.Channel, "team")], rooms.Select(r => (r.Kind, r.Name)));
         Assert.All(rooms, r => Assert.Equal(1, r.UnreadCount));
+    }
+
+    [Fact]
+    public async Task The_current_summary_reflects_a_join_before_the_projection_catches_up()
+    {
+        await SendAsync(_team, "alice", "before carol");
+        await using (var db = _database.NewContext())
+        {
+            await new JoinChannelHandler(db, _database.Clock).HandleAsync(new JoinChannelCommand(_team, "carol"), default);
+        }
+
+        await using var write = _database.NewContext();
+        var summary = await new CurrentRoomSummaryHandler(write).HandleAsync(new GetCurrentRoomSummaryQuery(_team, "carol"), default);
+        await Assert.ThrowsAsync<NotFoundException>(() => new RoomSummaryHandlers(_readModel.NewQueryContext())
+            .HandleAsync(new GetRoomSummaryQuery(_team, "carol"), default));
+
+        Assert.Equal(("team", 1, 0L), (summary.Name, summary.UnreadCount, summary.LastReadMessageId));
     }
 
     [Fact]
@@ -74,12 +103,11 @@ public sealed class QueryTests : IAsyncLifetime
             await SendAsync(_team, "alice", $"m{i}");
         }
 
-        var handler = new GetMessageHistoryHandler(_database.NewReadContext());
-        var newest = await handler.HandleAsync(new GetMessageHistoryQuery(_team, "bob", Limit: 2), default);
-        var older = await handler.HandleAsync(
-            new GetMessageHistoryQuery(_team, "bob", Before: newest.Messages[0].Id, Limit: 2), default);
-        var oldest = await handler.HandleAsync(
-            new GetMessageHistoryQuery(_team, "bob", Before: older.Messages[0].Id, Limit: 2), default);
+        await _readModel.CatchUpAsync(_database);
+
+        var newest = await HistoryAsync(new GetMessageHistoryQuery(_team, "bob", Limit: 2));
+        var older = await HistoryAsync(new GetMessageHistoryQuery(_team, "bob", Before: newest.Messages[0].Id, Limit: 2));
+        var oldest = await HistoryAsync(new GetMessageHistoryQuery(_team, "bob", Before: older.Messages[0].Id, Limit: 2));
 
         Assert.Equal(["m4", "m5"], newest.Messages.Select(m => m.Body));
         Assert.True(newest.HasMore);
@@ -94,23 +122,41 @@ public sealed class QueryTests : IAsyncLifetime
         var seen = await SendAsync(_team, "alice", "seen");
         await SendAsync(_team, "alice", "missed 1");
         await SendAsync(_team, "alice", "missed 2");
+        await _readModel.CatchUpAsync(_database);
 
-        var page = await new GetMessageHistoryHandler(_database.NewReadContext())
-            .HandleAsync(new GetMessageHistoryQuery(_team, "bob", After: seen.Id), default);
+        var page = await HistoryAsync(new GetMessageHistoryQuery(_team, "bob", After: seen.Id));
 
         Assert.Equal(["missed 1", "missed 2"], page.Messages.Select(m => m.Body));
         Assert.False(page.HasMore);
     }
 
     [Fact]
+    public async Task History_shows_edits_and_deletions()
+    {
+        var kept = await SendAsync(_team, "alice", "frist");
+        var removed = await SendAsync(_team, "alice", "oops");
+        await using (var db = _database.NewContext())
+        {
+            var changes = new MessageChangeHandlers(db, _database.Clock);
+            await changes.HandleAsync(new EditMessageCommand(_team, kept.Id, "alice", "first"), default);
+            await changes.HandleAsync(new DeleteMessageCommand(_team, removed.Id, "alice"), default);
+        }
+
+        await _readModel.CatchUpAsync(_database);
+        var page = await HistoryAsync(new GetMessageHistoryQuery(_team, "bob"));
+        await using var write = _database.NewContext();
+        var revisions = await new GetMessageRevisionsHandler(write, _readModel.NewQueryContext())
+            .HandleAsync(new GetMessageRevisionsQuery(_team, kept.Id, "bob"), default);
+
+        Assert.Equal([("first", 2, false), (string.Empty, 1, true)], page.Messages.Select(m => (m.Body, m.Revision, m.IsDeleted)));
+        Assert.Equal(["frist", "first"], revisions.Select(r => r.Body));
+    }
+
+    [Fact]
     public async Task History_is_only_visible_to_members()
     {
-        var handler = new GetMessageHistoryHandler(_database.NewReadContext());
-
-        await Assert.ThrowsAsync<ForbiddenException>(() =>
-            handler.HandleAsync(new GetMessageHistoryQuery(_team, "carol"), default));
-        await Assert.ThrowsAsync<NotFoundException>(() =>
-            handler.HandleAsync(new GetMessageHistoryQuery(Guid.NewGuid(), "carol"), default));
+        await Assert.ThrowsAsync<ForbiddenException>(() => HistoryAsync(new GetMessageHistoryQuery(_team, "carol")));
+        await Assert.ThrowsAsync<NotFoundException>(() => HistoryAsync(new GetMessageHistoryQuery(Guid.NewGuid(), "carol")));
     }
 
     [Theory]
@@ -119,10 +165,8 @@ public sealed class QueryTests : IAsyncLifetime
     [InlineData(null, null, 101)]
     public async Task History_rejects_bad_paging_arguments(long? before, long? after, int limit)
     {
-        var handler = new GetMessageHistoryHandler(_database.NewReadContext());
-
         await Assert.ThrowsAsync<RequestValidationException>(() =>
-            handler.HandleAsync(new GetMessageHistoryQuery(_team, "alice", before, after, limit), default));
+            HistoryAsync(new GetMessageHistoryQuery(_team, "alice", before, after, limit)));
     }
 
     [Fact]
@@ -130,8 +174,10 @@ public sealed class QueryTests : IAsyncLifetime
     {
         var message = await SendAsync(_team, "alice", "hello");
         await MarkReadAsync(_team, "bob", message.Id);
+        await _readModel.CatchUpAsync(_database);
 
-        var markers = await new GetReadMarkersHandler(_database.NewReadContext())
+        await using var write = _database.NewContext();
+        var markers = await new GetReadMarkersHandler(write, _readModel.NewQueryContext())
             .HandleAsync(new GetReadMarkersQuery(_team, "alice"), default);
 
         Assert.Equal([("alice", 0L), ("bob", message.Id)], markers.Select(m => (m.UserName, m.LastReadMessageId)));
@@ -140,7 +186,9 @@ public sealed class QueryTests : IAsyncLifetime
     [Fact]
     public async Task Channel_list_includes_seeded_channels_and_membership()
     {
-        var channels = await new GetChannelsHandler(_database.NewReadContext())
+        await _readModel.CatchUpAsync(_database);
+
+        var channels = await new GetChannelsHandler(_readModel.NewQueryContext())
             .HandleAsync(new GetChannelsQuery("bob"), default);
 
         Assert.Equal(["general", "random", "team"], channels.Select(c => c.Name));
@@ -152,17 +200,40 @@ public sealed class QueryTests : IAsyncLifetime
     [Fact]
     public async Task Users_are_listed_by_name()
     {
-        var users = await new GetUsersHandler(_database.NewReadContext()).HandleAsync(new GetUsersQuery(), default);
+        await _readModel.CatchUpAsync(_database);
+
+        var users = await new GetUsersHandler(_readModel.NewQueryContext()).HandleAsync(new GetUsersQuery(), default);
 
         Assert.Equal(["alice", "bob", "carol"], users);
     }
 
     [Fact]
+    public async Task Membership_checks_read_the_write_model_so_a_join_counts_at_once()
+    {
+        await using (var db = _database.NewContext())
+        {
+            await new JoinChannelHandler(db, _database.Clock).HandleAsync(new JoinChannelCommand(_team, "carol"), default);
+        }
+
+        await using var write = _database.NewContext();
+        var handlers = new RoomMembershipHandlers(write);
+
+        Assert.True(await handlers.HandleAsync(new IsRoomMemberQuery(_team, "carol"), default));
+        Assert.Contains(_team, await handlers.HandleAsync(new GetMyRoomIdsQuery("carol"), default));
+    }
+
+    [Fact]
     public async Task The_read_context_refuses_to_save()
     {
-        await using var read = _database.NewReadContext();
+        await using var read = _readModel.NewQueryContext();
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => read.SaveChangesAsync());
+    }
+
+    private async Task<MessagePage> HistoryAsync(GetMessageHistoryQuery query)
+    {
+        await using var write = _database.NewContext();
+        return await new GetMessageHistoryHandler(write, _readModel.NewQueryContext()).HandleAsync(query, default);
     }
 
     private async Task<MessageDto> SendAsync(Guid roomId, string sender, string body)

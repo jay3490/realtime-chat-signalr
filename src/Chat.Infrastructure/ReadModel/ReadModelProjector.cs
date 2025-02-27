@@ -1,13 +1,11 @@
 using Chat.Application.ReadModel;
 using Chat.Contracts;
+using Chat.Infrastructure.EventLog;
 using RoomKind = Chat.Domain.Rooms.RoomKind;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
 namespace Chat.Infrastructure.ReadModel;
-
-/// <summary>An event read from one partition of a stream; <see cref="Envelope"/> is null when it could not be read.</summary>
-public sealed record ConsumedEvent(string Stream, int Partition, long Offset, EventEnvelope? Envelope, string? Error = null);
 
 public enum ProjectionOutcome
 {
@@ -37,6 +35,17 @@ public sealed partial class ReadModelProjector(ReadModelDbContext db, TimeProvid
     {
         var checkpoint = await db.Checkpoints.AsNoTracking()
             .SingleOrDefaultAsync(c => c.Stream == stream && c.Partition == partition, cancellationToken);
+        return checkpoint is null ? null : checkpoint.Offset + 1;
+    }
+
+    /// <summary>
+    /// Synchronous form of <see cref="ResumeOffsetAsync"/> for the Kafka client's partition
+    /// assignment callback, which runs on the consuming thread and cannot be awaited.
+    /// </summary>
+    public long? ResumeOffset(string stream, int partition)
+    {
+        var checkpoint = db.Checkpoints.AsNoTracking()
+            .SingleOrDefault(c => c.Stream == stream && c.Partition == partition);
         return checkpoint is null ? null : checkpoint.Offset + 1;
     }
 

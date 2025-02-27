@@ -20,7 +20,7 @@ internal sealed class GetChannelsHandler(IChatReadDbContext read)
             .Select(r => new ChannelDto(
                 r.Id,
                 r.Name!,
-                read.RoomMembers.Count(m => m.RoomId == r.Id),
-                read.RoomMembers.Any(m => m.RoomId == r.Id && m.UserName == query.UserName)))
+                r.MemberCount,
+                read.Members.Any(m => m.RoomId == r.Id && m.UserName == query.UserName)))
             .ToListAsync(cancellationToken);
 }

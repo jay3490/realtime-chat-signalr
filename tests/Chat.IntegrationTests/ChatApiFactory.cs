@@ -13,9 +13,12 @@ using Microsoft.Extensions.DependencyInjection;
 namespace Chat.IntegrationTests;
 
 /// <summary>
-/// Hosts the real API in memory against a throwaway SQLite file. By default it uses the
-/// in-memory presence tracker and no backplane; passing a Redis connection string turns
-/// both on, and two factories sharing a database file and Redis behave like two replicas.
+/// Hosts the real API in memory against throwaway SQLite files, one for the write model
+/// and one for the read model, with the in-memory event log and the projection running in
+/// process. By default it uses the in-memory presence tracker and no backplane; passing a
+/// Redis connection string turns both on, and two factories sharing a write database and
+/// Redis behave like two replicas. Each factory keeps its own read model, because the
+/// in-memory event log cannot be shared between them.
 /// </summary>
 public sealed class ChatApiFactory(string? databasePath = null, string? redisConnection = null, string? redisPrefix = null)
     : WebApplicationFactory<Program>
@@ -27,6 +30,7 @@ public sealed class ChatApiFactory(string? databasePath = null, string? redisCon
 
     private readonly bool _ownsDatabase = databasePath is null;
     private readonly string _databasePath = databasePath ?? NewDatabasePath();
+    private readonly string _readDatabasePath = NewDatabasePath();
 
     public static string NewDatabasePath() => Path.Combine(Path.GetTempPath(), $"chat-tests-{Guid.NewGuid():N}.db");
 
@@ -34,6 +38,9 @@ public sealed class ChatApiFactory(string? databasePath = null, string? redisCon
     {
         builder.UseEnvironment("Testing");
         builder.UseSetting("ConnectionStrings:Chat", $"Data Source={_databasePath};Pooling=False");
+        builder.UseSetting("ConnectionStrings:ChatRead", $"Data Source={_readDatabasePath};Pooling=False");
+        builder.UseSetting("Kafka:BootstrapServers", string.Empty);
+        builder.UseSetting("Outbox:PollIntervalMilliseconds", "100");
         builder.UseSetting("ConnectionStrings:Redis", redisConnection ?? string.Empty);
         builder.UseSetting("Redis:KeyPrefix", redisPrefix ?? "chat:");
         builder.UseSetting("Database:Provider", "Sqlite");
@@ -79,6 +86,11 @@ public sealed class ChatApiFactory(string? databasePath = null, string? redisCon
         {
             File.Delete(_databasePath);
         }
+
+        if (File.Exists(_readDatabasePath))
+        {
+            File.Delete(_readDatabasePath);
+        }
     }
 }
 
@@ -86,6 +98,25 @@ public sealed record TestUser(string Name, string AccessToken, HttpClient Http, 
 {
     public async Task<T> GetAsync<T>(string path) =>
         (await Http.GetFromJsonAsync<T>(path, ChatApiFactory.Json))!;
+
+    /// <summary>
+    /// Polls a query until its result satisfies <paramref name="condition"/>. Queries read the
+    /// read model, which catches up with a command shortly after it commits.
+    /// </summary>
+    public async Task<T> GetEventuallyAsync<T>(string path, Func<T, bool> condition)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        while (true)
+        {
+            var result = await GetAsync<T>(path);
+            if (condition(result))
+            {
+                return result;
+            }
+
+            await Task.Delay(50, timeout.Token);
+        }
+    }
 
     public async Task<T> PostAsync<T>(string path, object body)
     {

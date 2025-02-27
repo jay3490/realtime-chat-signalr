@@ -55,6 +55,10 @@ internal static class ChatEndpoints
                 Guid roomId, long messageId, EditMessageRequest request, ClaimsPrincipal user, IDispatcher dispatcher, CancellationToken ct) =>
             dispatcher.SendAsync(new EditMessageCommand(roomId, messageId, user.GetUserName(), request.Body), ct));
 
+        api.MapGet("/rooms/{roomId:guid}/messages/{messageId:long}/revisions", (
+                Guid roomId, long messageId, ClaimsPrincipal user, IDispatcher dispatcher, CancellationToken ct) =>
+            dispatcher.QueryAsync(new GetMessageRevisionsQuery(roomId, messageId, user.GetUserName()), ct));
+
         api.MapDelete("/rooms/{roomId:guid}/messages/{messageId:long}", async (
                 Guid roomId, long messageId, ClaimsPrincipal user, IDispatcher dispatcher, CancellationToken ct) =>
             {
@@ -79,7 +83,7 @@ internal static class ChatEndpoints
         {
             var userName = user.GetUserName();
             var roomId = await dispatcher.SendAsync(new CreateChannelCommand(request.Name, userName), ct);
-            var room = await dispatcher.QueryAsync(new GetRoomSummaryQuery(roomId, userName), ct);
+            var room = await dispatcher.QueryAsync(new GetCurrentRoomSummaryQuery(roomId, userName), ct);
             return Results.Created($"/api/rooms/{roomId}", room);
         });
 
@@ -87,14 +91,14 @@ internal static class ChatEndpoints
         {
             var userName = user.GetUserName();
             await dispatcher.SendAsync(new JoinChannelCommand(roomId, userName), ct);
-            return await dispatcher.QueryAsync(new GetRoomSummaryQuery(roomId, userName), ct);
+            return await dispatcher.QueryAsync(new GetCurrentRoomSummaryQuery(roomId, userName), ct);
         });
 
         api.MapPost("/direct", async (OpenDirectRequest request, ClaimsPrincipal user, IDispatcher dispatcher, CancellationToken ct) =>
         {
             var userName = user.GetUserName();
             var roomId = await dispatcher.SendAsync(new OpenDirectConversationCommand(userName, request.UserName), ct);
-            return await dispatcher.QueryAsync(new GetRoomSummaryQuery(roomId, userName), ct);
+            return await dispatcher.QueryAsync(new GetCurrentRoomSummaryQuery(roomId, userName), ct);
         });
 
         api.MapGet("/users", (IDispatcher dispatcher, CancellationToken ct) =>

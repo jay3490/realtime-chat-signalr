@@ -23,11 +23,13 @@ public static class EventLogSetup
         if (kafka.IsConfigured)
         {
             services.AddSingleton<IEventPublisher, KafkaEventPublisher>();
+            services.AddSingleton<IEventLogConsumerFactory, KafkaEventConsumerFactory>();
         }
         else
         {
             services.AddSingleton<InMemoryEventLog>();
             services.AddSingleton<IEventPublisher, InMemoryEventPublisher>();
+            services.AddSingleton<IEventLogConsumerFactory, InMemoryEventConsumerFactory>();
         }
 
         return services;

@@ -1,20 +1,21 @@
-using Chat.Domain.Messages;
-using Chat.Domain.Rooms;
-using Chat.Domain.Users;
+using Chat.Application.ReadModel;
 
 namespace Chat.Application.Persistence;
 
 /// <summary>
-/// The read path. Query handlers project straight to DTOs through these untracked
-/// queryables; nothing read here can be saved. It may point at a read replica.
+/// The read model, built from published events by the projection. Query handlers project
+/// straight to DTOs through these untracked queryables; nothing read here can be saved.
+/// It trails the write model by however long the projection takes to apply an event.
 /// </summary>
 public interface IChatReadDbContext
 {
-    IQueryable<Room> Rooms { get; }
+    IQueryable<RoomView> Rooms { get; }
 
-    IQueryable<RoomMember> RoomMembers { get; }
+    IQueryable<MemberView> Members { get; }
 
-    IQueryable<Message> Messages { get; }
+    IQueryable<MessageView> Messages { get; }
 
-    IQueryable<User> Users { get; }
+    IQueryable<MessageRevisionView> MessageRevisions { get; }
+
+    IQueryable<UserView> Users { get; }
 }

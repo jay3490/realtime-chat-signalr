@@ -98,7 +98,8 @@ public sealed class ChatHubTests : IAsyncLifetime
         var receipt = await aliceReceipts.NextAsync();
 
         Assert.Equal((room.Id, "bob", message.Id), (receipt.RoomId, receipt.UserName, receipt.LastReadMessageId));
-        var unread = await bob.GetAsync<List<UnreadCountDto>>("/api/rooms/unread");
+        var unread = await bob.GetEventuallyAsync<List<UnreadCountDto>>(
+            "/api/rooms/unread", counts => counts.Count == 1 && counts[0].LastReadMessageId == message.Id);
         Assert.Equal(0, Assert.Single(unread).UnreadCount);
     }
 
@@ -182,9 +183,11 @@ public sealed class ChatHubTests : IAsyncLifetime
             await aliceHub.InvokeAsync<MessageDto>("SendMessage", room.Id, $"message {i}");
         }
 
+        // Queries read the read model, so wait until the projection has applied all three.
+        var bobRooms = await bob.GetEventuallyAsync<List<RoomSummaryDto>>(
+            "/api/rooms", rooms => rooms.Count == 1 && rooms[0].UnreadCount == 3);
         var latest = await bob.GetAsync<MessagePage>($"/api/rooms/{room.Id}/messages?limit=2");
         var older = await bob.GetAsync<MessagePage>($"/api/rooms/{room.Id}/messages?limit=2&before={latest.Messages[0].Id}");
-        var bobRooms = await bob.GetAsync<List<RoomSummaryDto>>("/api/rooms");
 
         Assert.Equal(["message 2", "message 3"], latest.Messages.Select(m => m.Body));
         Assert.True(latest.HasMore);

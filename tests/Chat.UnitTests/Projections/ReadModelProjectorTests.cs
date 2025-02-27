@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Chat.Contracts;
+using Chat.Infrastructure.EventLog;
 using Chat.Infrastructure.ReadModel;
 using Chat.UnitTests.Support;
 using Microsoft.EntityFrameworkCore;
