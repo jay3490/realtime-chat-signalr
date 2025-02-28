@@ -4,6 +4,7 @@ using Chat.Infrastructure.EventLog;
 using Chat.Infrastructure.ReadModel;
 using Chat.UnitTests.Support;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Chat.UnitTests.Projections;
 
@@ -146,7 +147,7 @@ public sealed class ReadModelProjectorTests : IAsyncLifetime
 
         await using (var db = _readModel.NewContext())
         {
-            await new ReadModelRebuilder(db).ResetAsync(default);
+            await new ReadModelRebuilder(db, NullLogger<ReadModelRebuilder>.Instance).ResetAsync(default);
             Assert.Null(await _readModel.NewProjector(db).ResumeOffsetAsync(EventStreams.Rooms, 0, default));
             Assert.Equal(2, await db.Rooms.CountAsync());
         }

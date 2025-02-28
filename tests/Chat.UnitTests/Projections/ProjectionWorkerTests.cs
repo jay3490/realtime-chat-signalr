@@ -4,6 +4,7 @@ using Chat.Infrastructure.ReadModel;
 using Chat.UnitTests.Support;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Chat.UnitTests.Projections;
 
@@ -43,7 +44,7 @@ public sealed class ProjectionWorkerTests : IAsyncLifetime
 
         await using (var db = _readModel.NewContext())
         {
-            await new ReadModelRebuilder(db).ResetAsync(default);
+            await new ReadModelRebuilder(db, NullLogger<ReadModelRebuilder>.Instance).ResetAsync(default);
             Assert.Equal(0, await db.Users.CountAsync());
         }
 

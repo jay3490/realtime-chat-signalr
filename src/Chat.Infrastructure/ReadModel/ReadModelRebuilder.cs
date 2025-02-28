@@ -2,6 +2,8 @@ using Chat.Application.ReadModel;
 using Chat.Domain.Rooms;
 using Chat.Infrastructure.Persistence.Configurations;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Chat.Infrastructure.ReadModel;
 
@@ -9,7 +11,7 @@ namespace Chat.Infrastructure.ReadModel;
 /// Empties the read model, checkpoints included, so the projection replays every stream
 /// from its first offset. The seeded channels are put back because no event creates them.
 /// </summary>
-public sealed class ReadModelRebuilder(ReadModelDbContext db)
+public sealed partial class ReadModelRebuilder(ReadModelDbContext db, ILogger<ReadModelRebuilder> logger)
 {
     public async Task ResetAsync(CancellationToken cancellationToken)
     {
@@ -33,5 +35,19 @@ public sealed class ReadModelRebuilder(ReadModelDbContext db)
         }));
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
+        LogReset(logger);
+    }
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Read model emptied; every stream will be replayed from its first offset")]
+    private static partial void LogReset(ILogger logger);
+}
+
+public static class ReadModelRebuild
+{
+    /// <summary>Empties the read model; the projection then replays the log from the start.</summary>
+    public static async Task ResetReadModelAsync(this IServiceProvider services, CancellationToken cancellationToken = default)
+    {
+        await using var scope = services.CreateAsyncScope();
+        await scope.ServiceProvider.GetRequiredService<ReadModelRebuilder>().ResetAsync(cancellationToken);
     }
 }

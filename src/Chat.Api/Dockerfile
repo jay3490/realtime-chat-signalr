@@ -4,6 +4,7 @@ WORKDIR /repo
 
 # Restore first so the package layer is cached until a project file changes.
 COPY global.json Directory.Build.props Directory.Packages.props .editorconfig ./
+COPY src/Chat.Contracts/Chat.Contracts.csproj src/Chat.Contracts/
 COPY src/Chat.Domain/Chat.Domain.csproj src/Chat.Domain/
 COPY src/Chat.Application/Chat.Application.csproj src/Chat.Application/
 COPY src/Chat.Infrastructure/Chat.Infrastructure.csproj src/Chat.Infrastructure/
