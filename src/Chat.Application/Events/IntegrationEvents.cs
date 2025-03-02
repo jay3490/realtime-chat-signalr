@@ -37,6 +37,8 @@ public static class IntegrationEvents
             deleted.Message.Id,
             deleted.Message.Sender,
             deleted.Message.DeletedAt ?? throw new InvalidOperationException("A deleted message has no deletion time.")),
+        MessagesDelivered delivered => new DeliveryRecorded(
+            delivered.RoomId, delivered.UserName, delivered.DeviceId, delivered.LastDeliveredMessageId, delivered.DeliveredAt),
         Domain.Users.UserRegistered registered => new Contracts.UserRegistered(registered.UserName, registered.RegisteredAt),
         _ => null,
     };

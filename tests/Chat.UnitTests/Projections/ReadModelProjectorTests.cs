@@ -160,6 +160,19 @@ public sealed class ReadModelProjectorTests : IAsyncLifetime
         Assert.Equal(before, await SnapshotAsync());
     }
 
+    [Fact]
+    public async Task Delivery_markers_are_kept_per_device_and_only_move_forward()
+    {
+        await _readModel.ProjectAsync(
+            new DeliveryRecorded(Room, "bob", "phone", 5, At),
+            new DeliveryRecorded(Room, "bob", "phone", 3, At),
+            new DeliveryRecorded(Room, "bob", "laptop", 4, At));
+
+        await using var db = _readModel.NewContext();
+        var markers = await db.Deliveries.OrderBy(d => d.DeviceId).Select(d => new { d.DeviceId, d.LastDeliveredMessageId }).ToListAsync();
+        Assert.Equal([("laptop", 4L), ("phone", 5L)], markers.Select(m => (m.DeviceId, m.LastDeliveredMessageId)));
+    }
+
     private static MessageSent Sent(long id, string sender, string body = "text") =>
         new(Room, id, sender, body, [], At.AddSeconds(id));
 

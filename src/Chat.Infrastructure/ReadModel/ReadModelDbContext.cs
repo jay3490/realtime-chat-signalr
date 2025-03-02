@@ -21,6 +21,12 @@ public sealed class ReadModelDbContext(DbContextOptions<ReadModelDbContext> opti
 
     public DbSet<UserView> Users => Set<UserView>();
 
+    public DbSet<DeliveryView> Deliveries => Set<DeliveryView>();
+
+    public DbSet<SyncEntry> SyncEntries => Set<SyncEntry>();
+
+    public DbSet<ReadModelState> State => Set<ReadModelState>();
+
     public DbSet<ProjectionCheckpoint> Checkpoints => Set<ProjectionCheckpoint>();
 
     public DbSet<ProcessedEvent> ProcessedEvents => Set<ProcessedEvent>();

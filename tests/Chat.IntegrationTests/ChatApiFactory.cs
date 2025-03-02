@@ -64,9 +64,9 @@ public sealed class ChatApiFactory(string? databasePath = null, string? redisCon
         return new TestUser(token.UserName, token.AccessToken, http, this);
     }
 
-    public HubConnection CreateHubConnection(string? accessToken) =>
+    public HubConnection CreateHubConnection(string? accessToken, string? deviceId = null) =>
         new HubConnectionBuilder()
-            .WithUrl(new Uri(Server.BaseAddress, "hubs/chat"), options =>
+            .WithUrl(new Uri(Server.BaseAddress, deviceId is null ? "hubs/chat" : $"hubs/chat?deviceId={deviceId}"), options =>
             {
                 // The test server has no sockets, so long polling over its in-memory handler is used.
                 options.HttpMessageHandlerFactory = _ => Server.CreateHandler();
@@ -125,9 +125,9 @@ public sealed record TestUser(string Name, string AccessToken, HttpClient Http, 
         return (await response.Content.ReadFromJsonAsync<T>(ChatApiFactory.Json))!;
     }
 
-    public async Task<HubConnection> ConnectAsync()
+    public async Task<HubConnection> ConnectAsync(string? deviceId = null)
     {
-        var connection = Factory.CreateHubConnection(AccessToken);
+        var connection = Factory.CreateHubConnection(AccessToken, deviceId);
         await connection.StartAsync();
 
         // StartAsync returns after the handshake, which the server sends before it runs

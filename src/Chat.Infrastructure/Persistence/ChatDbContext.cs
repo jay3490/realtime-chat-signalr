@@ -25,12 +25,15 @@ public sealed class ChatDbContext(
     OutboxSignal? outboxSignal = null) : DbContext(options), IChatDbContext
 {
     private const int SqliteConstraintUnique = 2067;
+    private const int SqliteConstraintPrimaryKey = 1555;
 
     public DbSet<Room> Rooms => Set<Room>();
 
     public DbSet<Message> Messages => Set<Message>();
 
     public DbSet<User> Users => Set<User>();
+
+    public DbSet<DeliveryMarker> DeliveryMarkers => Set<DeliveryMarker>();
 
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
 
@@ -59,7 +62,7 @@ public sealed class ChatDbContext(
     public bool IsUniqueViolation(DbUpdateException exception) => exception.InnerException switch
     {
         PostgresException pg => pg.SqlState == PostgresErrorCodes.UniqueViolation,
-        SqliteException sqlite => sqlite.SqliteExtendedErrorCode == SqliteConstraintUnique,
+        SqliteException sqlite => sqlite.SqliteExtendedErrorCode is SqliteConstraintUnique or SqliteConstraintPrimaryKey,
         _ => false,
     };
 

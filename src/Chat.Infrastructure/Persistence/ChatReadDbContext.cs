@@ -22,6 +22,12 @@ public sealed class ChatReadDbContext(DbContextOptions<ChatReadDbContext> option
 
     public IQueryable<UserView> Users => Set<UserView>();
 
+    public IQueryable<DeliveryView> Deliveries => Set<DeliveryView>();
+
+    public IQueryable<SyncEntry> SyncEntries => Set<SyncEntry>();
+
+    public IQueryable<ReadModelState> State => Set<ReadModelState>();
+
     public override int SaveChanges(bool acceptAllChangesOnSuccess) =>
         throw new InvalidOperationException("The read context is read-only.");
 

@@ -18,4 +18,10 @@ public interface IChatReadDbContext
     IQueryable<MessageRevisionView> MessageRevisions { get; }
 
     IQueryable<UserView> Users { get; }
+
+    IQueryable<DeliveryView> Deliveries { get; }
+
+    IQueryable<SyncEntry> SyncEntries { get; }
+
+    IQueryable<ReadModelState> State { get; }
 }

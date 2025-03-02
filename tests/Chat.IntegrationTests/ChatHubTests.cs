@@ -4,6 +4,7 @@ using Chat.Api.Realtime;
 using Chat.Application.Messages;
 using Chat.Application.Messages.Queries;
 using Chat.Application.Rooms.Queries;
+using Chat.Application.Sync;
 using Chat.Domain.Rooms;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.AspNetCore.SignalR.Client;
@@ -231,9 +232,52 @@ public sealed class ChatHubTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
-    private async Task<HubConnection> ConnectAsync(TestUser user)
+    [Fact]
+    public async Task A_device_reporting_delivery_tells_the_sender()
     {
-        var connection = await user.ConnectAsync();
+        var alice = await _factory.SignInAsync("alice");
+        var bob = await _factory.SignInAsync("bob");
+        var room = await alice.PostAsync<RoomSummaryDto>("/api/direct", new { userName = "bob" });
+        var aliceHub = await ConnectAsync(alice);
+        var bobPhone = await ConnectAsync(bob, "bob-phone");
+        var aliceDeliveries = new HubEvents<DeliveryReceiptDto>(aliceHub, nameof(IChatClient.DeliveryReceipt));
+
+        var sent = await aliceHub.InvokeAsync<MessageDto>("SendMessage", room.Id, "ping");
+        Assert.True(await bobPhone.InvokeAsync<bool>("MarkDelivered", room.Id, sent.Id));
+
+        var receipt = await aliceDeliveries.NextAsync();
+        Assert.Equal(("bob", "bob-phone", sent.Id), (receipt.UserName, receipt.DeviceId, receipt.LastDeliveredMessageId));
+
+        var markers = await alice.GetEventuallyAsync<List<DeliveryMarkerDto>>($"/api/rooms/{room.Id}/deliveries", m => m.Count == 1);
+        Assert.Equal("bob-phone", markers[0].DeviceId);
+        await Assert.ThrowsAsync<HubException>(() => aliceHub.InvokeAsync<bool>("MarkDelivered", room.Id, sent.Id));
+    }
+
+    [Fact]
+    public async Task A_device_that_was_offline_catches_up_from_its_sync_cursor()
+    {
+        var alice = await _factory.SignInAsync("alice");
+        var bob = await _factory.SignInAsync("bob");
+        var room = await alice.PostAsync<RoomSummaryDto>("/api/direct", new { userName = "bob" });
+        var start = await bob.GetEventuallyAsync<SyncPage>("/api/sync", page => page.Cursor.EndsWith(".1", StringComparison.Ordinal));
+
+        // Bob's laptop is closed while these happen.
+        var first = await alice.PostAsync<MessageDto>($"/api/rooms/{room.Id}/messages", new { body = "first" });
+        await alice.PostAsync<MessageDto>($"/api/rooms/{room.Id}/messages", new { body = "second" });
+        await alice.Http.PutAsJsonAsync($"/api/rooms/{room.Id}/messages/{first.Id}", new { body = "first, edited" });
+
+        var page = await bob.GetEventuallyAsync<SyncPage>(
+            $"/api/sync?cursor={start.Cursor}", p => p.Changes.Count == 3);
+
+        Assert.False(page.Reset);
+        Assert.Equal(["MessageSent", "MessageSent", "MessageEdited"], page.Changes.Select(c => c.Kind));
+        Assert.Equal("first, edited", page.Changes[0].Message!.Body);
+        Assert.Empty((await bob.GetAsync<SyncPage>($"/api/sync?cursor={page.Cursor}")).Changes);
+    }
+
+    private async Task<HubConnection> ConnectAsync(TestUser user, string? deviceId = null)
+    {
+        var connection = await user.ConnectAsync(deviceId);
         _connections.Add(connection);
         return connection;
     }

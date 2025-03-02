@@ -23,6 +23,30 @@ namespace Chat.Infrastructure.ReadModel.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("Chat.Application.ReadModel.DeliveryView", b =>
+                {
+                    b.Property<Guid>("RoomId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("UserName")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("DeviceId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset>("DeliveredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("LastDeliveredMessageId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("RoomId", "UserName", "DeviceId");
+
+                    b.ToTable("Deliveries", "read");
+                });
+
             modelBuilder.Entity("Chat.Application.ReadModel.MemberView", b =>
                 {
                     b.Property<Guid>("RoomId")
@@ -109,6 +133,26 @@ namespace Chat.Infrastructure.ReadModel.Migrations
                     b.ToTable("Messages", "read");
                 });
 
+            modelBuilder.Entity("Chat.Application.ReadModel.ReadModelState", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("Epoch")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("State", "read");
+
+                    b.HasData(
+                        new
+                        {
+                            Id = 1,
+                            Epoch = new Guid("5d0f3c1e-7b2a-4e9d-8c61-2f4a9b7e3d10")
+                        });
+                });
+
             modelBuilder.Entity("Chat.Application.ReadModel.RoomView", b =>
                 {
                     b.Property<Guid>("Id")
@@ -160,6 +204,39 @@ namespace Chat.Infrastructure.ReadModel.Migrations
                             MemberCount = 0,
                             Name = "random"
                         });
+                });
+
+            modelBuilder.Entity("Chat.Application.ReadModel.SyncEntry", b =>
+                {
+                    b.Property<long>("Position")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Position"));
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<long?>("MessageId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("RoomId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("UserName")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.HasKey("Position");
+
+                    b.HasIndex("RoomId", "Position");
+
+                    b.ToTable("SyncEntries", "read");
                 });
 
             modelBuilder.Entity("Chat.Application.ReadModel.UserView", b =>

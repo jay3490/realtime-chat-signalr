@@ -5,6 +5,8 @@ namespace Chat.Api.Realtime;
 
 public sealed record ReadReceiptDto(Guid RoomId, string UserName, long LastReadMessageId, DateTimeOffset ReadAt);
 
+public sealed record DeliveryReceiptDto(Guid RoomId, string UserName, string DeviceId, long LastDeliveredMessageId, DateTimeOffset DeliveredAt);
+
 public sealed record TypingDto(Guid RoomId, string UserName, int ExpiresInMs);
 
 public sealed record TypingStoppedDto(Guid RoomId, string UserName);
@@ -13,7 +15,7 @@ public sealed record PresenceDto(string UserName, bool IsOnline);
 
 public sealed record MemberJoinedDto(Guid RoomId, string UserName);
 
-public sealed record ConnectionInfoDto(string UserName, string ConnectionId, string Instance);
+public sealed record ConnectionInfoDto(string UserName, string ConnectionId, string Instance, string? DeviceId);
 
 /// <summary>Methods the server calls on connected clients. Names match the client's <c>connection.on(...)</c> handlers.</summary>
 public interface IChatClient
@@ -25,6 +27,8 @@ public interface IChatClient
     Task MessageDeleted(MessageDeletedDto deleted);
 
     Task ReadReceipt(ReadReceiptDto receipt);
+
+    Task DeliveryReceipt(DeliveryReceiptDto receipt);
 
     Task UserTyping(TypingDto typing);
 

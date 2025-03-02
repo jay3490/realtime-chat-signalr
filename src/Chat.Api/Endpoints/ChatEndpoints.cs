@@ -6,6 +6,7 @@ using Chat.Application.Messages.Queries;
 using Chat.Application.Realtime;
 using Chat.Application.Rooms;
 using Chat.Application.Rooms.Queries;
+using Chat.Application.Sync;
 using Chat.Application.Users.Queries;
 
 namespace Chat.Api.Endpoints;
@@ -26,6 +27,8 @@ internal static class ChatEndpoints
     public sealed record EditMessageRequest(string Body);
 
     public sealed record MarkReadRequest(long MessageId);
+
+    public sealed record MarkDeliveredRequest(long MessageId, string DeviceId);
 
     public static IEndpointRouteBuilder MapChatEndpoints(this IEndpointRouteBuilder app)
     {
@@ -75,6 +78,19 @@ internal static class ChatEndpoints
                 await dispatcher.SendAsync(new MarkReadCommand(roomId, user.GetUserName(), request.MessageId), ct);
                 return Results.NoContent();
             });
+
+        api.MapGet("/rooms/{roomId:guid}/deliveries", (Guid roomId, ClaimsPrincipal user, IDispatcher dispatcher, CancellationToken ct) =>
+            dispatcher.QueryAsync(new GetDeliveryMarkersQuery(roomId, user.GetUserName()), ct));
+
+        api.MapPost("/rooms/{roomId:guid}/delivered", async (
+                Guid roomId, MarkDeliveredRequest request, ClaimsPrincipal user, IDispatcher dispatcher, CancellationToken ct) =>
+            {
+                await dispatcher.SendAsync(new RecordDeliveryCommand(roomId, user.GetUserName(), request.DeviceId, request.MessageId), ct);
+                return Results.NoContent();
+            });
+
+        api.MapGet("/sync", (string? cursor, int? limit, ClaimsPrincipal user, IDispatcher dispatcher, CancellationToken ct) =>
+            dispatcher.QueryAsync(new GetChangesQuery(user.GetUserName(), cursor, limit ?? GetChangesQuery.DefaultLimit), ct));
 
         api.MapGet("/channels", (ClaimsPrincipal user, IDispatcher dispatcher, CancellationToken ct) =>
             dispatcher.QueryAsync(new GetChannelsQuery(user.GetUserName()), ct));

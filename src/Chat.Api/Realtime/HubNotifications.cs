@@ -21,6 +21,7 @@ internal sealed class HubNotifications(
       IDomainEventHandler<MessageEdited>,
       IDomainEventHandler<MessageDeleted>,
       IDomainEventHandler<MessagesRead>,
+      IDomainEventHandler<MessagesDelivered>,
       IDomainEventHandler<RoomCreated>,
       IDomainEventHandler<MemberJoined>
 {
@@ -43,6 +44,10 @@ internal sealed class HubNotifications(
     public Task HandleAsync(MessagesRead domainEvent, CancellationToken cancellationToken) =>
         hub.Clients.Group(ChatHub.RoomGroup(domainEvent.RoomId)).ReadReceipt(new ReadReceiptDto(
             domainEvent.RoomId, domainEvent.UserName, domainEvent.LastReadMessageId, domainEvent.ReadAt));
+
+    public Task HandleAsync(MessagesDelivered domainEvent, CancellationToken cancellationToken) =>
+        hub.Clients.Group(ChatHub.RoomGroup(domainEvent.RoomId)).DeliveryReceipt(new DeliveryReceiptDto(
+            domainEvent.RoomId, domainEvent.UserName, domainEvent.DeviceId, domainEvent.LastDeliveredMessageId, domainEvent.DeliveredAt));
 
     public async Task HandleAsync(RoomCreated domainEvent, CancellationToken cancellationToken)
     {

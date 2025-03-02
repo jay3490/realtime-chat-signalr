@@ -17,6 +17,8 @@ public interface IChatDbContext
 
     DbSet<User> Users { get; }
 
+    DbSet<DeliveryMarker> DeliveryMarkers { get; }
+
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 
     /// <summary>True when the exception was raised by a unique index rejecting a row.</summary>

@@ -22,6 +22,30 @@ namespace Chat.Infrastructure.Persistence.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("Chat.Domain.Messages.DeliveryMarker", b =>
+                {
+                    b.Property<Guid>("RoomId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("UserName")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("DeviceId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset>("DeliveredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("LastDeliveredMessageId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("RoomId", "UserName", "DeviceId");
+
+                    b.ToTable("DeliveryMarkers", (string)null);
+                });
+
             modelBuilder.Entity("Chat.Domain.Messages.Message", b =>
                 {
                     b.Property<long>("Id")
@@ -214,6 +238,15 @@ namespace Chat.Infrastructure.Persistence.Migrations
                         .HasFilter("\"PublishedAt\" IS NULL");
 
                     b.ToTable("OutboxMessages", (string)null);
+                });
+
+            modelBuilder.Entity("Chat.Domain.Messages.DeliveryMarker", b =>
+                {
+                    b.HasOne("Chat.Domain.Rooms.Room", null)
+                        .WithMany()
+                        .HasForeignKey("RoomId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Chat.Domain.Messages.Message", b =>

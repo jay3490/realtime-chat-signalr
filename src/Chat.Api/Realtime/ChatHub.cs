@@ -3,6 +3,7 @@ using Chat.Application.Abstractions;
 using Chat.Application.Messages;
 using Chat.Application.Realtime;
 using Chat.Application.Rooms.Queries;
+using Chat.Domain.Messages;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 
@@ -23,13 +24,26 @@ public sealed class ChatHub(
 {
     public const string Path = "/hubs/chat";
 
+    /// <summary>Query string parameter a client uses to say which of the user's devices it is.</summary>
+    public const string DeviceIdParameter = "deviceId";
+
+    private const string DeviceIdItem = "chat.deviceId";
+
     public static string RoomGroup(Guid roomId) => $"room:{roomId:N}";
 
     private string UserName => Context.User!.GetUserName();
 
+    private string? DeviceId => Context.Items.TryGetValue(DeviceIdItem, out var id) ? id as string : null;
+
     public override async Task OnConnectedAsync()
     {
         var userName = UserName;
+        var deviceId = Context.GetHttpContext()?.Request.Query[DeviceIdParameter].ToString();
+        if (DeliveryMarker.IsValidDeviceId(deviceId))
+        {
+            Context.Items[DeviceIdItem] = deviceId;
+        }
+
         localConnections.Add(Context.ConnectionId, userName);
 
         // Register first: a room created while the groups below are being joined will then
@@ -79,6 +93,16 @@ public sealed class ChatHub(
     public Task<bool> DeleteMessage(Guid roomId, long messageId) =>
         dispatcher.SendAsync(new DeleteMessageCommand(roomId, messageId, UserName), Context.ConnectionAborted);
 
+    /// <summary>
+    /// Reports that this device has received the room's messages up to <paramref name="messageId"/>.
+    /// Needs the connection to have been opened with a <c>deviceId</c>.
+    /// </summary>
+    public Task<bool> MarkDelivered(Guid roomId, long messageId)
+    {
+        var deviceId = DeviceId ?? throw new HubException($"Connect with a '{DeviceIdParameter}' to report deliveries.");
+        return dispatcher.SendAsync(new RecordDeliveryCommand(roomId, UserName, deviceId, messageId), Context.ConnectionAborted);
+    }
+
     public Task<bool> MarkRead(Guid roomId, long messageId) =>
         dispatcher.SendAsync(new MarkReadCommand(roomId, UserName, messageId), Context.ConnectionAborted);
 
@@ -116,5 +140,5 @@ public sealed class ChatHub(
 
     /// <summary>Which instance is serving this connection; handy when running several behind a load balancer.</summary>
     public ConnectionInfoDto GetConnectionInfo() =>
-        new(UserName, Context.ConnectionId, Environment.MachineName);
+        new(UserName, Context.ConnectionId, Environment.MachineName, DeviceId);
 }

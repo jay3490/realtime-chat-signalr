@@ -106,6 +106,7 @@ public sealed partial class ReadModelProjector(ReadModelDbContext db, TimeProvid
         MessageEdited e => ApplyAsync(e, cancellationToken),
         MessageDeleted e => ApplyAsync(e, cancellationToken),
         ReadReceiptRecorded e => ApplyAsync(e, cancellationToken),
+        DeliveryRecorded e => ApplyAsync(e, cancellationToken),
         UserRegistered e => ApplyAsync(e, cancellationToken),
         _ => Task.CompletedTask,
     };
@@ -126,6 +127,7 @@ public sealed partial class ReadModelProjector(ReadModelDbContext db, TimeProvid
             MemberCount = e.Members.Count,
         });
         db.Members.AddRange(e.Members.Select(member => new MemberView { RoomId = e.RoomId, UserName = member, JoinedAt = e.CreatedAt }));
+        AddToFeed(e.RoomId, SyncChangeKinds.RoomCreated, e.CreatedAt, userName: e.CreatedBy);
     }
 
     private async Task ApplyAsync(MemberJoined e, CancellationToken cancellationToken)
@@ -144,6 +146,8 @@ public sealed partial class ReadModelProjector(ReadModelDbContext db, TimeProvid
         {
             room.MemberCount++;
         }
+
+        AddToFeed(e.RoomId, SyncChangeKinds.MemberJoined, e.JoinedAt, userName: e.UserName);
     }
 
     private async Task ApplyAsync(MessageSent e, CancellationToken cancellationToken)
@@ -173,6 +177,7 @@ public sealed partial class ReadModelProjector(ReadModelDbContext db, TimeProvid
         await db.Members
             .Where(m => m.RoomId == e.RoomId && m.UserName != e.Sender && m.LastReadMessageId < e.MessageId)
             .ExecuteUpdateAsync(set => set.SetProperty(m => m.UnreadCount, m => m.UnreadCount + 1), cancellationToken);
+        AddToFeed(e.RoomId, SyncChangeKinds.MessageSent, e.SentAt, messageId: e.MessageId);
     }
 
     private async Task ApplyAsync(MessageEdited e, CancellationToken cancellationToken)
@@ -187,6 +192,7 @@ public sealed partial class ReadModelProjector(ReadModelDbContext db, TimeProvid
         message.Revision = e.Revision;
         message.EditedAt = e.EditedAt;
         db.MessageRevisions.Add(new MessageRevisionView { MessageId = e.MessageId, Revision = e.Revision, Body = e.Body, RecordedAt = e.EditedAt });
+        AddToFeed(e.RoomId, SyncChangeKinds.MessageEdited, e.EditedAt, messageId: e.MessageId);
     }
 
     private async Task ApplyAsync(MessageDeleted e, CancellationToken cancellationToken)
@@ -205,6 +211,7 @@ public sealed partial class ReadModelProjector(ReadModelDbContext db, TimeProvid
         await db.Members
             .Where(m => m.RoomId == e.RoomId && m.UserName != e.Sender && m.LastReadMessageId < e.MessageId && m.UnreadCount > 0)
             .ExecuteUpdateAsync(set => set.SetProperty(m => m.UnreadCount, m => m.UnreadCount - 1), cancellationToken);
+        AddToFeed(e.RoomId, SyncChangeKinds.MessageDeleted, e.DeletedAt, messageId: e.MessageId);
     }
 
     private async Task ApplyAsync(ReadReceiptRecorded e, CancellationToken cancellationToken)
@@ -220,6 +227,28 @@ public sealed partial class ReadModelProjector(ReadModelDbContext db, TimeProvid
         member.UnreadCount = await db.Messages.CountAsync(
             m => m.RoomId == e.RoomId && m.Id > e.LastReadMessageId && m.Sender != e.UserName && m.DeletedAt == null,
             cancellationToken);
+        AddToFeed(e.RoomId, SyncChangeKinds.ReadReceipt, e.ReadAt, e.LastReadMessageId, e.UserName);
+    }
+
+    private async Task ApplyAsync(DeliveryRecorded e, CancellationToken cancellationToken)
+    {
+        var delivery = await db.Deliveries.FindAsync([e.RoomId, e.UserName, e.DeviceId], cancellationToken);
+        if (delivery is null)
+        {
+            db.Deliveries.Add(new DeliveryView
+            {
+                RoomId = e.RoomId,
+                UserName = e.UserName,
+                DeviceId = e.DeviceId,
+                LastDeliveredMessageId = e.LastDeliveredMessageId,
+                DeliveredAt = e.DeliveredAt,
+            });
+        }
+        else if (e.LastDeliveredMessageId > delivery.LastDeliveredMessageId)
+        {
+            delivery.LastDeliveredMessageId = e.LastDeliveredMessageId;
+            delivery.DeliveredAt = e.DeliveredAt;
+        }
     }
 
     private async Task ApplyAsync(UserRegistered e, CancellationToken cancellationToken)
@@ -229,6 +258,16 @@ public sealed partial class ReadModelProjector(ReadModelDbContext db, TimeProvid
             db.Users.Add(new UserView { Name = e.UserName, RegisteredAt = e.RegisteredAt });
         }
     }
+
+    private void AddToFeed(Guid roomId, string kind, DateTimeOffset occurredAt, long? messageId = null, string? userName = null) =>
+        db.SyncEntries.Add(new SyncEntry
+        {
+            RoomId = roomId,
+            Kind = kind,
+            MessageId = messageId,
+            UserName = userName,
+            OccurredAt = occurredAt,
+        });
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Skipping unreadable event at {Stream}/{Partition}@{Offset}: {Error}")]
     private static partial void LogUnreadable(ILogger logger, string stream, int partition, long offset, string? error);

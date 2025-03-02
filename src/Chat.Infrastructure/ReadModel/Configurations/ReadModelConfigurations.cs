@@ -94,3 +94,41 @@ internal sealed class ProcessedEventConfiguration : IEntityTypeConfiguration<Pro
         builder.Property(e => e.EventType).HasMaxLength(64);
     }
 }
+
+internal sealed class DeliveryViewConfiguration : IEntityTypeConfiguration<DeliveryView>
+{
+    public void Configure(EntityTypeBuilder<DeliveryView> builder)
+    {
+        builder.ToTable("Deliveries");
+        builder.HasKey(d => new { d.RoomId, d.UserName, d.DeviceId });
+        builder.Property(d => d.UserName).HasMaxLength(UserName.MaxLength);
+        builder.Property(d => d.DeviceId).HasMaxLength(DeliveryMarker.MaxDeviceIdLength);
+    }
+}
+
+internal sealed class SyncEntryConfiguration : IEntityTypeConfiguration<SyncEntry>
+{
+    public void Configure(EntityTypeBuilder<SyncEntry> builder)
+    {
+        builder.ToTable("SyncEntries");
+        builder.HasKey(e => e.Position);
+        builder.Property(e => e.Position).ValueGeneratedOnAdd();
+        builder.Property(e => e.Kind).HasMaxLength(32).IsRequired();
+        builder.Property(e => e.UserName).HasMaxLength(UserName.MaxLength);
+        builder.HasIndex(e => new { e.RoomId, e.Position });
+    }
+}
+
+internal sealed class ReadModelStateConfiguration : IEntityTypeConfiguration<ReadModelState>
+{
+    // The epoch a freshly created read model starts with; a rebuild replaces it.
+    public static readonly Guid InitialEpoch = new("5d0f3c1e-7b2a-4e9d-8c61-2f4a9b7e3d10");
+
+    public void Configure(EntityTypeBuilder<ReadModelState> builder)
+    {
+        builder.ToTable("State");
+        builder.HasKey(s => s.Id);
+        builder.Property(s => s.Id).ValueGeneratedNever();
+        builder.HasData(new ReadModelState { Id = ReadModelState.SingletonId, Epoch = InitialEpoch });
+    }
+}
