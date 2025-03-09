@@ -6,6 +6,7 @@ using Chat.Api.Realtime;
 using Chat.Application;
 using Chat.Infrastructure;
 using Chat.Infrastructure.EventLog;
+using Chat.Infrastructure.Notifications;
 using Chat.Infrastructure.ReadModel;
 using Chat.Infrastructure.Presence;
 
@@ -19,9 +20,17 @@ builder.Services.AddOutboxRelay(builder.Configuration);
 
 // With Kafka the Chat.Projections service maintains the read model. With the in-memory log
 // only this process can read the events, so it runs the projection itself.
-if (!builder.Configuration.GetSection(KafkaOptions.SectionName).Get<KafkaOptions>()?.IsConfigured ?? true)
+var kafkaConfigured = builder.Configuration.GetSection(KafkaOptions.SectionName).Get<KafkaOptions>()?.IsConfigured ?? false;
+if (!kafkaConfigured)
 {
     builder.Services.AddReadModelProjection();
+
+    // Mention notifications are normally the Chat.Notifications service's job; a single
+    // process can run them itself when asked to.
+    if (builder.Configuration.GetValue<bool>($"{NotificationOptions.SectionName}:{nameof(NotificationOptions.RunInProcess)}"))
+    {
+        builder.Services.AddMentionNotifications(builder.Configuration);
+    }
 }
 builder.Services.AddChatAuthentication(builder.Configuration);
 builder.Services.AddChatPresence(builder.Configuration);
