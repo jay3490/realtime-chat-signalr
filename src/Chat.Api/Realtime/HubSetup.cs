@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 using Chat.Api.Auth;
 using Chat.Api.Errors;
+using Chat.Application.Realtime;
 using Chat.Infrastructure.Presence;
 using Microsoft.AspNetCore.SignalR;
 using StackExchange.Redis;
@@ -15,9 +16,16 @@ internal static class HubSetup
         services.AddSingleton<IUserIdProvider, UserNameIdProvider>();
         services.AddHostedService<PresenceHeartbeatService>();
 
+        var limitsSection = configuration.GetSection(RealtimeLimitsOptions.SectionName);
+        services.Configure<RealtimeLimitsOptions>(limitsSection);
+        var limits = limitsSection.Get<RealtimeLimitsOptions>() ?? new RealtimeLimitsOptions();
+
         var signalR = services.AddSignalR(hub =>
             {
+                // Filters run in the order added: errors are translated around the rate limit.
                 hub.AddFilter<ChatHubExceptionFilter>();
+                hub.AddFilter<RateLimitHubFilter>();
+                hub.MaximumReceiveMessageSize = limits.MaximumReceiveMessageSizeBytes;
             })
             .AddJsonProtocol(json => json.PayloadSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 

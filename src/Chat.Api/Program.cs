@@ -4,6 +4,7 @@ using Chat.Api.Endpoints;
 using Chat.Api.Errors;
 using Chat.Api.Realtime;
 using Chat.Application;
+using Chat.Application.Realtime;
 using Chat.Infrastructure;
 using Chat.Infrastructure.EventLog;
 using Chat.Infrastructure.Notifications;
@@ -35,6 +36,10 @@ if (!kafkaConfigured)
 builder.Services.AddChatAuthentication(builder.Configuration);
 builder.Services.AddChatPresence(builder.Configuration);
 builder.Services.AddChatRealtime(builder.Configuration);
+
+builder.WebHost.ConfigureKestrel(kestrel => kestrel.Limits.MaxRequestBodySize =
+    builder.Configuration.GetSection(RealtimeLimitsOptions.SectionName).Get<RealtimeLimitsOptions>()?.MaxRequestBodySizeBytes
+    ?? new RealtimeLimitsOptions().MaxRequestBodySizeBytes);
 
 builder.Services.ConfigureHttpJsonOptions(json =>
     json.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));

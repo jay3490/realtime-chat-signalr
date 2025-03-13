@@ -20,7 +20,11 @@ namespace Chat.IntegrationTests;
 /// Redis behave like two replicas. Each factory keeps its own read model, because the
 /// in-memory event log cannot be shared between them.
 /// </summary>
-public sealed class ChatApiFactory(string? databasePath = null, string? redisConnection = null, string? redisPrefix = null)
+public sealed class ChatApiFactory(
+    string? databasePath = null,
+    string? redisConnection = null,
+    string? redisPrefix = null,
+    IReadOnlyDictionary<string, string>? settings = null)
     : WebApplicationFactory<Program>
 {
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
@@ -49,6 +53,10 @@ public sealed class ChatApiFactory(string? databasePath = null, string? redisCon
         builder.UseSetting("Auth:DevTokens:Enabled", "true");
         builder.UseSetting("Typing:ThrottleMilliseconds", "60000");
         builder.UseSetting("Typing:IndicatorMilliseconds", "5000");
+        foreach (var (key, value) in settings ?? new Dictionary<string, string>())
+        {
+            builder.UseSetting(key, value);
+        }
     }
 
     /// <summary>Signs in through the dev token endpoint and returns an authenticated HTTP client.</summary>
