@@ -10,16 +10,27 @@ using Microsoft.Extensions.Time.Testing;
 namespace Chat.UnitTests.Support;
 
 /// <summary>
-/// A read model database in SQLite memory plus a fake log: <see cref="ProjectAsync"/> gives
-/// each event the next offset of its stream, as a single-partition topic would.
+/// A read model database plus a fake log: <see cref="ProjectAsync"/> gives each event the
+/// next offset of its stream, as a single-partition topic would.
 /// </summary>
+/// <remarks>
+/// By default the database lives in memory behind one shared connection, which is fast but
+/// only safe while a single thread uses it. Tests that run a background worker against the
+/// database ask for <see cref="CreateFileBackedAsync"/>: every context then opens its own
+/// connection to a temporary file, and SQLite's own locking serializes them.
+/// </remarks>
 public sealed class SqliteReadModel : IAsyncDisposable
 {
-    private readonly SqliteConnection _connection;
+    private readonly SqliteConnection? _sharedConnection;
+    private readonly string? _filePath;
     private readonly Dictionary<string, long> _nextOffset = new(StringComparer.Ordinal);
     private long _lastOutboxId;
 
-    private SqliteReadModel(SqliteConnection connection) => _connection = connection;
+    private SqliteReadModel(SqliteConnection? sharedConnection, string? filePath)
+    {
+        _sharedConnection = sharedConnection;
+        _filePath = filePath;
+    }
 
     public FakeTimeProvider Clock { get; } = new(new DateTimeOffset(2026, 3, 1, 9, 0, 0, TimeSpan.Zero));
 
@@ -30,19 +41,21 @@ public sealed class SqliteReadModel : IAsyncDisposable
     {
         var connection = new SqliteConnection("DataSource=:memory:");
         await connection.OpenAsync();
-        var readModel = new SqliteReadModel(connection);
-
-        await using var db = readModel.NewContext();
-        await db.Database.EnsureCreatedAsync();
-        return readModel;
+        return await InitializeAsync(new SqliteReadModel(connection, filePath: null));
     }
 
+    /// <summary>A read model in a temporary file, safe to use from several threads at once.</summary>
+    public static Task<SqliteReadModel> CreateFileBackedAsync() =>
+        InitializeAsync(new SqliteReadModel(
+            sharedConnection: null,
+            Path.Combine(Path.GetTempPath(), $"chat-read-model-{Guid.NewGuid():N}.db")));
+
     public ReadModelDbContext NewContext() =>
-        new(new DbContextOptionsBuilder<ReadModelDbContext>().UseSqlite(_connection).Options);
+        new(Configure(new DbContextOptionsBuilder<ReadModelDbContext>()).Options);
 
     /// <summary>A context for the query side, as the API would resolve it.</summary>
     public ChatReadDbContext NewQueryContext() =>
-        new(new DbContextOptionsBuilder<ChatReadDbContext>().UseSqlite(_connection).Options);
+        new(Configure(new DbContextOptionsBuilder<ChatReadDbContext>()).Options);
 
     /// <summary>
     /// Projects every outbox row of the write database not seen yet, the way the relay and
@@ -93,5 +106,30 @@ public sealed class SqliteReadModel : IAsyncDisposable
         return await NewProjector(db).ProjectAsync(consumed, default);
     }
 
-    public ValueTask DisposeAsync() => _connection.DisposeAsync();
+    public async ValueTask DisposeAsync()
+    {
+        if (_sharedConnection is not null)
+        {
+            await _sharedConnection.DisposeAsync();
+        }
+
+        if (_filePath is not null)
+        {
+            SqliteConnection.ClearAllPools();
+            File.Delete(_filePath);
+        }
+    }
+
+    private static async Task<SqliteReadModel> InitializeAsync(SqliteReadModel readModel)
+    {
+        await using var db = readModel.NewContext();
+        await db.Database.EnsureCreatedAsync();
+        return readModel;
+    }
+
+    private DbContextOptionsBuilder<TContext> Configure<TContext>(DbContextOptionsBuilder<TContext> options)
+        where TContext : DbContext =>
+        _sharedConnection is not null
+            ? options.UseSqlite(_sharedConnection)
+            : options.UseSqlite($"Data Source={_filePath};Pooling=False");
 }

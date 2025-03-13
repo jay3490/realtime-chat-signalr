@@ -15,7 +15,9 @@ public sealed class ProjectionWorkerTests : IAsyncLifetime
     private readonly InMemoryEventLog _log = new();
     private SqliteReadModel _readModel = null!;
 
-    public async Task InitializeAsync() => _readModel = await SqliteReadModel.CreateAsync();
+    // The worker writes from its own thread while the test polls, so each needs its own
+    // connection; a shared in-memory connection is not safe to use concurrently.
+    public async Task InitializeAsync() => _readModel = await SqliteReadModel.CreateFileBackedAsync();
 
     public async Task DisposeAsync() => await _readModel.DisposeAsync();
 
