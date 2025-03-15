@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using Chat.Api.Realtime;
 using Chat.Application.Messages;
 using Chat.Application.Messages.Queries;
@@ -273,6 +274,20 @@ public sealed class ChatHubTests : IAsyncLifetime
         Assert.Equal(["MessageSent", "MessageSent", "MessageEdited"], page.Changes.Select(c => c.Kind));
         Assert.Equal("first, edited", page.Changes[0].Message!.Body);
         Assert.Empty((await bob.GetAsync<SyncPage>($"/api/sync?cursor={page.Cursor}")).Changes);
+    }
+
+    [Fact]
+    public async Task Readiness_checks_both_databases_and_liveness_checks_nothing()
+    {
+        var http = _factory.CreateClient();
+
+        var ready = await http.GetFromJsonAsync<JsonElement>("/health/ready");
+        var live = await http.GetAsync("/health/live");
+
+        Assert.Equal("Healthy", ready.GetProperty("status").GetString());
+        var checks = ready.GetProperty("checks").EnumerateObject().Select(c => c.Name).Order(StringComparer.Ordinal);
+        Assert.Equal(["draining", "read-database", "write-database"], checks);
+        Assert.Equal(HttpStatusCode.OK, live.StatusCode);
     }
 
     private async Task<HubConnection> ConnectAsync(TestUser user, string? deviceId = null)

@@ -1,4 +1,5 @@
 using Chat.Infrastructure.EventLog;
+using Chat.Infrastructure.Hosting;
 using Chat.Infrastructure.Notifications;
 using Chat.Infrastructure.Presence;
 
@@ -18,10 +19,11 @@ if (!kafka.IsConfigured || string.IsNullOrWhiteSpace(builder.Configuration.GetCo
 builder.Services.AddChatEventLog(builder.Configuration);
 builder.Services.AddChatPresence(builder.Configuration);
 builder.Services.AddMentionNotifications(builder.Configuration);
-builder.Services.AddHealthChecks();
+builder.Services.AddGracefulShutdown(builder.Configuration);
+builder.Services.AddChatHealthChecks(builder.Configuration);
 
 var app = builder.Build();
 
-app.MapHealthChecks("/health");
+app.MapChatHealthEndpoints();
 
 await app.RunAsync();
