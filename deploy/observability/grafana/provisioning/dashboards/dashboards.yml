@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: realtime-chat
+    folder: Realtime chat
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

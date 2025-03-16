@@ -1,6 +1,7 @@
 using Chat.Infrastructure;
 using Chat.Infrastructure.EventLog;
 using Chat.Infrastructure.Hosting;
+using Chat.Infrastructure.Observability;
 using Chat.Infrastructure.ReadModel;
 
 // Chat.Projections: reads every event stream from Kafka and keeps the read model that the
@@ -21,6 +22,7 @@ if (!kafka.IsConfigured)
 builder.Services.AddChatReadModel(builder.Configuration);
 builder.Services.AddChatEventLog(builder.Configuration);
 builder.Services.AddReadModelProjection();
+builder.Services.AddChatTelemetry("chat-projections");
 builder.Services.AddGracefulShutdown(builder.Configuration);
 builder.Services.AddChatHealthChecks(builder.Configuration);
 
@@ -34,5 +36,6 @@ if (args.Contains("--rebuild"))
 }
 
 app.MapChatHealthEndpoints();
+app.MapChatMetrics();
 
 await app.RunAsync();

@@ -112,6 +112,7 @@ public sealed class OutboxProcessorTests : IAsyncLifetime
     private OutboxProcessor NewProcessor(Infrastructure.Persistence.ChatDbContext db, int batchSize) =>
         new(db, _publisher, _database.Clock,
             Options.Create(new OutboxOptions { BatchSize = batchSize, RetentionHours = 72 }),
+            TestMetrics.Create(),
             NullLogger<OutboxProcessor>.Instance);
 
     private async Task<List<OutboxMessage>> UnpublishedAsync()

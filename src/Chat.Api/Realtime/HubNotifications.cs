@@ -4,6 +4,7 @@ using Chat.Application.Realtime;
 using Chat.Application.Rooms.Queries;
 using Chat.Domain.Messages;
 using Chat.Domain.Rooms;
+using Chat.Infrastructure.Observability;
 using Microsoft.AspNetCore.SignalR;
 
 namespace Chat.Api.Realtime;
@@ -16,7 +17,8 @@ namespace Chat.Api.Realtime;
 internal sealed class HubNotifications(
     IHubContext<ChatHub, IChatClient> hub,
     IPresenceTracker presence,
-    IDispatcher dispatcher)
+    IDispatcher dispatcher,
+    ChatMetrics metrics)
     : IDomainEventHandler<MessagePosted>,
       IDomainEventHandler<MessageEdited>,
       IDomainEventHandler<MessageDeleted>,
@@ -27,6 +29,7 @@ internal sealed class HubNotifications(
 {
     public Task HandleAsync(MessagePosted domainEvent, CancellationToken cancellationToken)
     {
+        metrics.MessageSent();
         var message = MessageDto.From(domainEvent.Message);
         return hub.Clients.Group(ChatHub.RoomGroup(message.RoomId)).MessageReceived(message);
     }

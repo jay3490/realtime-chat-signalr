@@ -1,5 +1,6 @@
 using Chat.Contracts;
 using Chat.Infrastructure.EventLog;
+using Chat.Infrastructure.Observability;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -15,6 +16,7 @@ namespace Chat.Infrastructure.Notifications;
 public sealed partial class NotificationWorker(
     IEventLogConsumerFactory consumers,
     MentionNotifier notifier,
+    ChatMetrics metrics,
     TimeProvider clock,
     ILogger<NotificationWorker> logger) : BackgroundService
 {
@@ -66,7 +68,7 @@ public sealed partial class NotificationWorker(
         {
             try
             {
-                await notifier.HandleAsync(envelope, stoppingToken);
+                metrics.NotificationsSent(await notifier.HandleAsync(envelope, stoppingToken));
                 return;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)

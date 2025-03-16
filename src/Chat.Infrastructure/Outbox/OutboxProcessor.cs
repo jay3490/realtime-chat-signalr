@@ -1,4 +1,5 @@
 using Chat.Infrastructure.EventLog;
+using Chat.Infrastructure.Observability;
 using Chat.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -49,6 +50,7 @@ public sealed partial class OutboxProcessor(
     IEventPublisher publisher,
     TimeProvider clock,
     IOptions<OutboxOptions> options,
+    ChatMetrics metrics,
     ILogger<OutboxProcessor> logger)
 {
     private const int CleanupBatchSize = 1000;
@@ -81,6 +83,7 @@ public sealed partial class OutboxProcessor(
         }
 
         var acknowledged = Math.Clamp(result.Acknowledged, 0, batch.Count);
+        metrics.OutboxPublished(acknowledged, failed: acknowledged < batch.Count);
         if (acknowledged > 0)
         {
             var publishedIds = batch.Take(acknowledged).Select(m => m.Id).ToList();

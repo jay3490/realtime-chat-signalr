@@ -9,8 +9,9 @@ using Chat.Infrastructure;
 using Chat.Infrastructure.EventLog;
 using Chat.Infrastructure.Hosting;
 using Chat.Infrastructure.Notifications;
-using Chat.Infrastructure.ReadModel;
+using Chat.Infrastructure.Observability;
 using Chat.Infrastructure.Presence;
+using Chat.Infrastructure.ReadModel;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -46,6 +47,7 @@ builder.Services.ConfigureHttpJsonOptions(json =>
     json.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<ChatExceptionHandler>();
+builder.Services.AddChatTelemetry("chat-api");
 builder.Services.AddGracefulShutdown(builder.Configuration);
 builder.Services.AddChatHealthChecks(builder.Configuration);
 
@@ -68,6 +70,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapChatHealthEndpoints();
+app.MapChatMetrics();
 app.MapDevTokenEndpoint();
 app.MapChatEndpoints();
 app.MapHub<ChatHub>(ChatHub.Path);

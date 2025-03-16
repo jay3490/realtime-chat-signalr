@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Chat.Application.Realtime;
+using Chat.Infrastructure.Observability;
 
 namespace Chat.Api.Realtime;
 
@@ -7,6 +8,12 @@ namespace Chat.Api.Realtime;
 public sealed class LocalConnections
 {
     private readonly ConcurrentDictionary<string, string> _users = new(StringComparer.Ordinal);
+
+    public LocalConnections(ChatMetrics metrics)
+    {
+        ArgumentNullException.ThrowIfNull(metrics);
+        metrics.ObserveActiveConnections(() => _users.Count);
+    }
 
     public void Add(string connectionId, string userName) => _users[connectionId] = userName;
 

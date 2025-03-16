@@ -1,5 +1,6 @@
 using Chat.Contracts;
 using Chat.Infrastructure.EventLog;
+using Chat.Infrastructure.Observability;
 using Chat.Infrastructure.ReadModel;
 using Chat.UnitTests.Support;
 using Microsoft.EntityFrameworkCore;
@@ -64,6 +65,8 @@ public sealed class ProjectionWorkerTests : IAsyncLifetime
         var services = new ServiceCollection()
             .AddLogging()
             .AddSingleton(TimeProvider.System)
+            .AddMetrics()
+            .AddSingleton<ChatMetrics>()
             .AddSingleton<IEventLogConsumerFactory>(new InMemoryEventConsumerFactory(_log))
             .AddScoped(_ => _readModel.NewContext())
             .AddScoped<ReadModelProjector>()

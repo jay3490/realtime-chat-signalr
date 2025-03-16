@@ -1,4 +1,5 @@
 using Chat.Application.Realtime;
+using Chat.Infrastructure.Observability;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Options;
 
@@ -10,7 +11,7 @@ namespace Chat.Api.Realtime;
 /// a <see cref="HubException"/> and never reaches the hub. Typing notifications are throttled
 /// separately and reads are not limited.
 /// </summary>
-internal sealed class RateLimitHubFilter(IOptions<RealtimeLimitsOptions> options, TimeProvider clock) : IHubFilter
+internal sealed class RateLimitHubFilter(IOptions<RealtimeLimitsOptions> options, TimeProvider clock, ChatMetrics metrics) : IHubFilter
 {
     private const string BucketItem = "chat.rateLimit";
 
@@ -36,6 +37,7 @@ internal sealed class RateLimitHubFilter(IOptions<RealtimeLimitsOptions> options
             && item is TokenBucket bucket
             && !bucket.TryTake())
         {
+            metrics.RateLimited(invocationContext.HubMethodName);
             throw new HubException("You are sending messages too quickly. Wait a moment and try again.");
         }
 

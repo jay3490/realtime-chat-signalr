@@ -1,6 +1,7 @@
 using Chat.Infrastructure.EventLog;
 using Chat.Infrastructure.Hosting;
 using Chat.Infrastructure.Notifications;
+using Chat.Infrastructure.Observability;
 using Chat.Infrastructure.Presence;
 
 // Chat.Notifications: reads room events from Kafka and, for every mention of someone who has
@@ -19,11 +20,13 @@ if (!kafka.IsConfigured || string.IsNullOrWhiteSpace(builder.Configuration.GetCo
 builder.Services.AddChatEventLog(builder.Configuration);
 builder.Services.AddChatPresence(builder.Configuration);
 builder.Services.AddMentionNotifications(builder.Configuration);
+builder.Services.AddChatTelemetry("chat-notifications");
 builder.Services.AddGracefulShutdown(builder.Configuration);
 builder.Services.AddChatHealthChecks(builder.Configuration);
 
 var app = builder.Build();
 
 app.MapChatHealthEndpoints();
+app.MapChatMetrics();
 
 await app.RunAsync();

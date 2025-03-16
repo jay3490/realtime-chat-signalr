@@ -1,5 +1,6 @@
 using Chat.Contracts;
 using Chat.Infrastructure.EventLog;
+using Chat.Infrastructure.Observability;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -15,6 +16,7 @@ namespace Chat.Infrastructure.ReadModel;
 public sealed partial class ProjectionWorker(
     IServiceScopeFactory scopes,
     IEventLogConsumerFactory consumers,
+    ChatMetrics metrics,
     TimeProvider clock,
     ILogger<ProjectionWorker> logger) : BackgroundService
 {
@@ -72,7 +74,9 @@ public sealed partial class ProjectionWorker(
             {
                 await using var scope = scopes.CreateAsyncScope();
                 var projector = scope.ServiceProvider.GetRequiredService<ReadModelProjector>();
-                await projector.ProjectAsync(consumed, stoppingToken);
+                var outcome = await projector.ProjectAsync(consumed, stoppingToken);
+                var lag = consumed.Envelope is { } envelope ? clock.GetUtcNow() - envelope.OccurredAt : TimeSpan.Zero;
+                metrics.Projected(outcome, consumed.Envelope?.EventType, lag);
                 return;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)

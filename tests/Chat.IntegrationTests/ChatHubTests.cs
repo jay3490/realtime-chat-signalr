@@ -290,6 +290,25 @@ public sealed class ChatHubTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, live.StatusCode);
     }
 
+    [Fact]
+    public async Task Metrics_are_exposed_for_prometheus()
+    {
+        var alice = await _factory.SignInAsync("alice");
+        var bob = await _factory.SignInAsync("bob");
+        var room = await alice.PostAsync<RoomSummaryDto>("/api/direct", new { userName = "bob" });
+        var aliceHub = await ConnectAsync(alice);
+        await aliceHub.InvokeAsync<MessageDto>("SendMessage", room.Id, "count me");
+
+        // The read model lags the command; wait until the projection has seen the message too.
+        await bob.GetEventuallyAsync<List<UnreadCountDto>>("/api/rooms/unread", counts => counts.Count == 1 && counts[0].UnreadCount == 1);
+        var metrics = await _factory.CreateClient().GetStringAsync("/metrics");
+
+        Assert.Contains("chat_messages_sent_total", metrics, StringComparison.Ordinal);
+        Assert.Contains("chat_connections_active", metrics, StringComparison.Ordinal);
+        Assert.Contains("chat_projection_events_total", metrics, StringComparison.Ordinal);
+        Assert.Contains("chat_outbox_published_total", metrics, StringComparison.Ordinal);
+    }
+
     private async Task<HubConnection> ConnectAsync(TestUser user, string? deviceId = null)
     {
         var connection = await user.ConnectAsync(deviceId);

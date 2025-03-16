@@ -1,0 +1,17 @@
+# Scrapes /metrics on every chat service. In compose the API runs as several replicas
+# behind one service name, so they are discovered through Docker's DNS.
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: chat-api
+    dns_sd_configs:
+      - names: [api]
+        type: A
+        port: 8080
+  - job_name: chat-projections
+    static_configs:
+      - targets: ["projections:8080"]
+  - job_name: chat-notifications
+    static_configs:
+      - targets: ["notifications:8080"]
