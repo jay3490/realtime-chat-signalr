@@ -1,0 +1,93 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Production-shaped settings. PostgreSQL, Redis and Kafka are external (managed or run
+# separately), and the chat-secrets Secret is created outside this repository, e.g.:
+#
+#   kubectl -n chat create secret generic chat-secrets \
+#     --from-literal=ConnectionStrings__Chat='Host=...;Database=chat;Username=...;Password=...' \
+#     --from-literal=ConnectionStrings__Redis='redis.example.internal:6379,ssl=true,password=...' \
+#     --from-literal=Auth__Jwt__SigningKey='...'
+#
+# The dev token endpoint stays off; a real identity provider has to issue the tokens.
+namespace: chat
+
+resources:
+  - ../../base
+
+images:
+  - name: realtime-chat-api
+    newName: registry.example.com/realtime-chat/api
+    newTag: "1.0.0"
+  - name: realtime-chat-projections
+    newName: registry.example.com/realtime-chat/projections
+    newTag: "1.0.0"
+  - name: realtime-chat-notifications
+    newName: registry.example.com/realtime-chat/notifications
+    newTag: "1.0.0"
+  - name: realtime-chat-web
+    newName: registry.example.com/realtime-chat/web
+    newTag: "1.0.0"
+
+patches:
+  - target:
+      kind: ConfigMap
+      name: chat-config
+    patch: |-
+      - op: replace
+        path: /data/Kafka__BootstrapServers
+        value: kafka-bootstrap.kafka.svc:9092
+      - op: replace
+        path: /data/Kafka__Partitions
+        value: "12"
+      - op: replace
+        path: /data/Kafka__ReplicationFactor
+        value: "3"
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: api
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 3
+      - op: replace
+        path: /spec/maxReplicas
+        value: 20
+  - target:
+      kind: Deployment
+      name: api
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 3
+      - op: replace
+        path: /spec/template/spec/containers/0/resources
+        value:
+          requests: { cpu: 500m, memory: 512Mi }
+          limits: { memory: 1Gi }
+  - target:
+      kind: PodDisruptionBudget
+      name: api
+    patch: |-
+      - op: replace
+        path: /spec/minAvailable
+        value: 2
+  - target:
+      kind: Deployment
+      name: notifications
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+  - target:
+      kind: Ingress
+      name: chat
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: chat.example.com
+      - op: add
+        path: /spec/tls
+        value:
+          - hosts: [chat.example.com]
+            secretName: chat-tls

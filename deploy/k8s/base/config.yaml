@@ -1,0 +1,19 @@
+# Settings shared by every service. Secrets (connection strings with passwords, the JWT
+# signing key) come from the chat-secrets Secret that each overlay provides.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chat-config
+data:
+  ASPNETCORE_ENVIRONMENT: Production
+  Database__Provider: Postgres
+  Redis__Backplane: "true"
+  Redis__KeyPrefix: "chat:"
+  Kafka__BootstrapServers: kafka:9092
+  Kafka__Partitions: "6"
+  Kafka__ReplicationFactor: "1"
+  Auth__DevTokens__Enabled: "false"
+  # Pods keep serving (but report not ready) for this long after SIGTERM so the ingress and
+  # the Service stop routing to them first; terminationGracePeriodSeconds covers it.
+  Shutdown__DrainSeconds: "10"
+  Shutdown__TimeoutSeconds: "30"

@@ -1,10 +1,14 @@
-# Two API replicas behind nginx, sharing PostgreSQL and Redis.
+# Two API replicas behind nginx, sharing PostgreSQL, Redis and a single-node Kafka, plus the
+# projection and notification workers.
 #
-#   docker compose up --build      then open http://localhost:8088
+#   docker compose up --build                           then open http://localhost:8088
+#   docker compose --profile observability up --build   adds Prometheus (:9090) and Grafana (:3000)
 #
 # The browser client connects with WebSockets only (skipNegotiation), so a connection
 # never needs to return to the instance that negotiated it and nginx can round-robin.
-# Messages reach users on the other replica through the Redis backplane.
+# Messages reach users on the other replica through the Redis backplane. Every change is
+# also written to the outbox, relayed to Kafka, and projected into the read model (the
+# "read" schema of the same PostgreSQL database) by the projections service.
 
 name: realtime-chat
 
@@ -14,11 +18,16 @@ x-api-image: &api-image
     context: .
     dockerfile: src/Chat.Api/Dockerfile
 
-x-api-environment: &api-environment
-  ASPNETCORE_ENVIRONMENT: Production
+x-database-environment: &database-environment
   ConnectionStrings__Chat: Host=postgres;Database=chat;Username=chat;Password=chat
-  ConnectionStrings__Redis: redis:6379
   Database__Provider: Postgres
+  Kafka__BootstrapServers: kafka:9092
+  Shutdown__DrainSeconds: "5"
+
+x-api-environment: &api-environment
+  <<: *database-environment
+  ASPNETCORE_ENVIRONMENT: Production
+  ConnectionStrings__Redis: redis:6379
   Redis__Backplane: "true"
   # Demo settings: a fixed signing key and the password-less dev token endpoint.
   # Override CHAT_JWT_SIGNING_KEY, and do not expose this stack publicly as-is.
@@ -48,13 +57,41 @@ services:
       timeout: 3s
       retries: 20
 
-  # Applies EF Core migrations once, before any API replica starts.
+  # One node acting as both broker and controller (KRaft, no ZooKeeper). Topics are created
+  # by the migrate step with infinite retention, since the read model is rebuilt from them.
+  kafka:
+    image: apache/kafka:3.9.1
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+
+  # Applies the write and read model migrations and creates the Kafka topics, once, before
+  # anything else starts.
   migrate:
     <<: *api-image
     command: ["--migrate"]
     environment: *api-environment
     depends_on:
       postgres:
+        condition: service_healthy
+      kafka:
         condition: service_healthy
     restart: "no"
 
@@ -63,6 +100,33 @@ services:
     environment: *api-environment
     deploy:
       replicas: 2
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  projections:
+    image: realtime-chat-projections:local
+    build:
+      context: .
+      dockerfile: src/Chat.Projections/Dockerfile
+    environment: *database-environment
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  notifications:
+    image: realtime-chat-notifications:local
+    build:
+      context: .
+      dockerfile: src/Chat.Notifications/Dockerfile
+    environment:
+      Kafka__BootstrapServers: kafka:9092
+      ConnectionStrings__Redis: redis:6379
+      # Empty: notifications are written to the log. Set a URL to have them POSTed there.
+      Notifications__WebhookUrl: ${CHAT_NOTIFICATION_WEBHOOK:-}
+      Shutdown__DrainSeconds: "0"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -78,5 +142,28 @@ services:
     depends_on:
       - api
 
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: [observability]
+    volumes:
+      - ./deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:12.1.1
+    profiles: [observability]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./deploy/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
 volumes:
   postgres-data:
+  kafka-data:

@@ -1,0 +1,77 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# A self-contained development environment: the application with one replica of each
+# service, the dev token endpoint switched on, and throwaway PostgreSQL, Redis and Kafka.
+#
+#   kubectl apply -k deploy/k8s/overlays/dev
+#
+# Images are the ones docker compose builds (realtime-chat-*:local); load them into the
+# cluster first (for example `kind load docker-image` or `minikube image load`).
+namespace: chat-dev
+
+resources:
+  - namespace.yaml
+  - ../../base
+  - dependencies.yaml
+
+images:
+  - name: realtime-chat-api
+    newTag: local
+  - name: realtime-chat-projections
+    newTag: local
+  - name: realtime-chat-notifications
+    newTag: local
+  - name: realtime-chat-web
+    newTag: local
+
+# Development-only values; never reuse them outside this overlay.
+secretGenerator:
+  - name: chat-secrets
+    literals:
+      - ConnectionStrings__Chat=Host=postgres;Database=chat;Username=chat;Password=chat
+      - ConnectionStrings__Redis=redis:6379
+      - Auth__Jwt__SigningKey=dev-overlay-signing-key-change-me-0123456789
+
+patches:
+  - target:
+      kind: ConfigMap
+      name: chat-config
+    patch: |-
+      - op: replace
+        path: /data/Auth__DevTokens__Enabled
+        value: "true"
+      - op: replace
+        path: /data/Shutdown__DrainSeconds
+        value: "2"
+  - target:
+      kind: Deployment
+      name: (api|web)
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: api
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 1
+      - op: replace
+        path: /spec/maxReplicas
+        value: 2
+  - target:
+      kind: PodDisruptionBudget
+      name: (api|web)
+    patch: |-
+      - op: replace
+        path: /spec/minAvailable
+        value: 0
+  - target:
+      kind: Ingress
+      name: chat
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: chat.localtest.me
