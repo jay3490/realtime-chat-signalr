@@ -1,7 +1,16 @@
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
-import { Channel, MessagePage, ReadMarker, RoomSummary, UnreadCount } from './models';
+import {
+  Channel,
+  DeliveryMarker,
+  Message,
+  MessagePage,
+  ReadMarker,
+  RoomSummary,
+  SyncPage,
+  UnreadCount,
+} from './models';
 
 /** REST calls for loading state. Live updates arrive through the hub instead. */
 @Injectable({ providedIn: 'root' })
@@ -54,5 +63,23 @@ export class ChatApiService {
 
   readMarkers(roomId: string): Promise<ReadMarker[]> {
     return firstValueFrom(this.http.get<ReadMarker[]>(`/api/rooms/${roomId}/read-markers`));
+  }
+
+  deliveries(roomId: string): Promise<DeliveryMarker[]> {
+    return firstValueFrom(this.http.get<DeliveryMarker[]>(`/api/rooms/${roomId}/deliveries`));
+  }
+
+  editMessage(roomId: string, messageId: number, body: string): Promise<Message> {
+    return firstValueFrom(this.http.put<Message>(`/api/rooms/${roomId}/messages/${messageId}`, { body }));
+  }
+
+  deleteMessage(roomId: string, messageId: number): Promise<void> {
+    return firstValueFrom(this.http.delete<void>(`/api/rooms/${roomId}/messages/${messageId}`));
+  }
+
+  /** Changes since `cursor`; without one, the current head of the feed and no changes. */
+  sync(cursor?: string): Promise<SyncPage> {
+    const params = cursor ? new HttpParams().set('cursor', cursor) : undefined;
+    return firstValueFrom(this.http.get<SyncPage>('/api/sync', { params }));
   }
 }

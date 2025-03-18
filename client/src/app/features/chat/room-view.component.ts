@@ -12,10 +12,15 @@ import {
 import { FormsModule } from '@angular/forms';
 import { ChatHubService } from '../../core/chat-hub.service';
 import { ChatStore } from '../../core/chat-store.service';
+import { mentions, splitMentions } from '../../core/mentions';
+import { Message } from '../../core/models';
 import { PresenceDotComponent } from '../../shared/presence-dot.component';
 
 /** Client-side spacing for typing notifications; the server throttles as well. */
 const TYPING_PING_MS = 1000;
+
+/** Matches the server's edit window; the server is what enforces it. */
+const EDIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 @Component({
   selector: 'app-room-view',
@@ -39,18 +44,57 @@ const TYPING_PING_MS = 1000;
           </button>
         }
         @for (message of store.activeMessages(); track message.id) {
-          <article class="message" [class.mine]="message.sender === me()">
+          <article
+            class="message"
+            [class.mine]="message.sender === me()"
+            [class.deleted]="message.isDeleted"
+            [class.mentions-me]="mentionsMe(message)"
+          >
             <div class="meta">
               <span class="sender">{{ message.sender }}</span>
               <time [attr.datetime]="message.sentAt">{{ message.sentAt | date: 'MMM d, HH:mm' }}</time>
+              @if (message.editedAt && !message.isDeleted) {
+                <span class="edited" [attr.title]="'Edited ' + (message.editedAt | date: 'MMM d, HH:mm')">(edited)</span>
+              }
+              @if (message.sender === me() && !message.isDeleted && editingId() !== message.id) {
+                <span class="actions">
+                  @if (canEdit(message)) {
+                    <button class="link" (click)="startEdit(message)">Edit</button>
+                  }
+                  <button class="link danger" (click)="remove(message)">Delete</button>
+                </span>
+              }
             </div>
-            <p class="body">{{ message.body }}</p>
+            @if (message.isDeleted) {
+              <p class="body muted">This message was deleted.</p>
+            } @else if (editingId() === message.id) {
+              <form class="edit-form" (ngSubmit)="saveEdit(message)">
+                <textarea
+                  name="editDraft"
+                  rows="2"
+                  [(ngModel)]="editDraft"
+                  (keydown.escape)="cancelEdit()"
+                  (keydown.enter)="onEditEnter($event, message)"
+                  maxlength="4000"
+                ></textarea>
+                <div class="edit-buttons">
+                  <button type="button" (click)="cancelEdit()">Cancel</button>
+                  <button type="submit" class="primary" [disabled]="editDraft.trim().length === 0">Save</button>
+                </div>
+              </form>
+            } @else {
+              <p class="body">
+                @for (segment of segments(message); track $index) {
+                  <span [class.mention]="!!segment.mention" [class.me]="segment.mention === me()">{{ segment.text }}</span>
+                }
+              </p>
+            }
           </article>
         } @empty {
           <p class="muted empty">No messages yet. Say hello.</p>
         }
-        @if (seenBy()) {
-          <p class="seen">{{ seenBy() }}</p>
+        @if (receiptText()) {
+          <p class="seen">{{ receiptText() }}</p>
         }
       </section>
 
@@ -63,7 +107,7 @@ const TYPING_PING_MS = 1000;
           [(ngModel)]="draft"
           (ngModelChange)="onDraftChanged()"
           (keydown.enter)="onEnter($event)"
-          [placeholder]="'Message ' + (room.kind === 'Direct' ? room.name : '#' + room.name)"
+          [placeholder]="'Message ' + (room.kind === 'Direct' ? room.name : '#' + room.name) + ' (use @name to mention)'"
           [disabled]="hub.state() !== 'connected'"
           maxlength="4000"
         ></textarea>
@@ -83,6 +127,8 @@ export class RoomViewComponent {
   private readonly scroller = viewChild<ElementRef<HTMLElement>>('scroller');
 
   protected draft = '';
+  protected editDraft = '';
+  protected readonly editingId = signal<number | null>(null);
   private readonly draftLength = signal(0);
   private lastTypingPing = 0;
   private stickToBottom = true;
@@ -104,12 +150,18 @@ export class RoomViewComponent {
     return `${users.slice(0, -1).join(', ')} and ${users.at(-1)} are typing...`;
   });
 
-  protected readonly seenBy = computed(() => {
-    const users = this.store.activeSeenBy();
-    if (users.length === 0) {
-      return '';
+  /** "Seen" when someone has read my latest message, otherwise "Delivered" once a device of theirs has it. */
+  protected readonly receiptText = computed(() => {
+    const direct = this.store.activeRoom()?.kind === 'Direct';
+    const seen = this.store.activeSeenBy();
+    if (seen.length > 0) {
+      return direct ? 'Seen' : `Seen by ${seen.join(', ')}`;
     }
-    return this.store.activeRoom()?.kind === 'Direct' ? 'Seen' : `Seen by ${users.join(', ')}`;
+    const delivered = this.store.activeDeliveredTo();
+    if (delivered.length > 0) {
+      return direct ? 'Delivered' : `Delivered to ${delivered.join(', ')}`;
+    }
+    return '';
   });
 
   constructor() {
@@ -129,6 +181,62 @@ export class RoomViewComponent {
       this.previousFirstId = firstId;
       this.previousHeight = element.scrollHeight;
     });
+  }
+
+  protected segments(message: Message) {
+    return splitMentions(message.body);
+  }
+
+  protected mentionsMe(message: Message): boolean {
+    return message.sender !== this.me() && !message.isDeleted && mentions(message.body, this.me());
+  }
+
+  protected canEdit(message: Message): boolean {
+    return Date.now() - new Date(message.sentAt).getTime() <= EDIT_WINDOW_MS;
+  }
+
+  protected startEdit(message: Message): void {
+    this.editDraft = message.body;
+    this.editingId.set(message.id);
+    this.sendError.set(null);
+  }
+
+  protected cancelEdit(): void {
+    this.editingId.set(null);
+    this.editDraft = '';
+  }
+
+  protected onEditEnter(event: Event, message: Message): void {
+    if (!(event as KeyboardEvent).shiftKey) {
+      event.preventDefault();
+      void this.saveEdit(message);
+    }
+  }
+
+  protected async saveEdit(message: Message): Promise<void> {
+    const body = this.editDraft.trim();
+    if (!body) {
+      return;
+    }
+    try {
+      if (body !== message.body) {
+        await this.store.editMessage(message, body);
+      }
+      this.cancelEdit();
+    } catch (error) {
+      this.sendError.set(error instanceof Error ? error.message : 'The message could not be edited.');
+    }
+  }
+
+  protected async remove(message: Message): Promise<void> {
+    if (!confirm('Delete this message for everyone?')) {
+      return;
+    }
+    try {
+      await this.store.deleteMessage(message);
+    } catch (error) {
+      this.sendError.set(error instanceof Error ? error.message : 'The message could not be deleted.');
+    }
   }
 
   protected onScroll(): void {

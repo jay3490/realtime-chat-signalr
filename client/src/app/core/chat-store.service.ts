@@ -3,7 +3,9 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { AuthService } from './auth.service';
 import { ChatApiService } from './chat-api.service';
 import { ChatHubService } from './chat-hub.service';
-import { Message, ReadMarker, RoomSummary } from './models';
+import { DeliveryMarker, Message, ReadMarker, RoomSummary, SyncChange } from './models';
+
+const CURSOR_KEY = 'realtime-chat.sync-cursor';
 
 interface RoomMessages {
   messages: Message[];
@@ -23,6 +25,11 @@ export class ChatStore {
   private readonly roomsById = signal<ReadonlyMap<string, RoomSummary>>(new Map());
   private readonly messagesByRoom = signal<ReadonlyMap<string, RoomMessages>>(new Map());
   private readonly markersByRoom = signal<ReadonlyMap<string, ReadMarker[]>>(new Map());
+  private readonly deliveriesByRoom = signal<ReadonlyMap<string, DeliveryMarker[]>>(new Map());
+  /** Highest message id this device has reported as delivered, per room. */
+  private readonly deliveredUpTo = new Map<string, number>();
+  /** Position in the server's change feed that this device has applied up to. */
+  private cursor: string | null = null;
   /** roomId -> (user -> timer that clears the indicator). */
   private readonly typingTimers = new Map<string, Map<string, ReturnType<typeof setTimeout>>>();
   private readonly typingByRoom = signal<ReadonlyMap<string, readonly string[]>>(new Map());
@@ -72,11 +79,32 @@ export class ChatStore {
       .map((m) => m.userName);
   });
 
+  /** Other members with a device that has received the newest message, when it is mine. */
+  readonly activeDeliveredTo = computed(() => {
+    const id = this.activeRoomId();
+    const last = this.activeMessages().at(-1);
+    if (!id || !last || last.sender !== this.me()) {
+      return [];
+    }
+    const users = (this.deliveriesByRoom().get(id) ?? [])
+      .filter((d) => d.userName !== this.me() && d.lastDeliveredMessageId >= last.id)
+      .map((d) => d.userName);
+    return [...new Set(users)];
+  });
+
   readonly totalUnread = computed(() => this.rooms().reduce((sum, r) => sum + r.unreadCount, 0));
 
   constructor() {
     const destroyRef = inject(DestroyRef);
     this.hub.messageReceived$.pipe(takeUntilDestroyed(destroyRef)).subscribe((m) => this.onMessage(m));
+    this.hub.messageEdited$.pipe(takeUntilDestroyed(destroyRef)).subscribe((m) => this.upsertMessage(m));
+    this.hub.messageDeleted$
+      .pipe(takeUntilDestroyed(destroyRef))
+      .subscribe((d) => this.markDeleted(d.roomId, d.messageId));
+    this.hub.deliveryReceipt$.pipe(takeUntilDestroyed(destroyRef)).subscribe((d) => {
+      const { roomId, ...marker } = d;
+      this.upsertDelivery(roomId, marker);
+    });
     this.hub.readReceipt$.pipe(takeUntilDestroyed(destroyRef)).subscribe((r) => {
       this.upsertMarker(r.roomId, { userName: r.userName, lastReadMessageId: r.lastReadMessageId, readAt: r.readAt });
       if (r.userName === this.me()) {
@@ -122,54 +150,66 @@ export class ChatStore {
     return this.onlineUsers().has(userName);
   }
 
+  /**
+   * Loads the room list. The feed head is taken first, so anything that happens while the
+   * list loads is picked up by the next sync instead of falling in between.
+   */
   async load(): Promise<void> {
+    this.setCursor((await this.api.sync()).cursor);
     const [rooms, online] = await Promise.all([this.api.rooms(), this.api.onlineUsers()]);
     this.roomsById.set(new Map(rooms.map((r) => [r.id, r])));
     this.onlineUsers.set(new Set(online));
   }
 
   /**
-   * Brings state up to date after the connection was lost. Pushes sent while offline are
-   * gone, so this reloads what they would have changed: unread counts (and any room added
-   * meanwhile), messages after the newest one held for each loaded room, read markers of
-   * the open room and who is online.
+   * Brings this device up to date after the connection was lost. Pushes sent while offline
+   * are gone, so it asks the server for every change since its sync cursor and applies
+   * them; every device does the same from its own cursor, so they all converge. If the
+   * cursor is no longer valid (the server's read model was rebuilt) it reloads instead.
    */
   async resync(): Promise<void> {
     this.clearAllTyping();
+    this.onlineUsers.set(new Set(await this.hub.onlineUsers()));
 
-    const [counts, online] = await Promise.all([this.api.unreadCounts(), this.hub.onlineUsers()]);
-    this.onlineUsers.set(new Set(online));
-
-    if (counts.some((c) => !this.roomsById().has(c.roomId))) {
-      const rooms = await this.api.rooms();
-      this.roomsById.update((all) => new Map([...all, ...rooms.map((r) => [r.id, r] as const)]));
-    }
-    for (const count of counts) {
-      this.patchRoom(count.roomId, (room) => ({
-        ...room,
-        unreadCount: count.unreadCount,
-        lastReadMessageId: count.lastReadMessageId,
-      }));
+    if (!(await this.syncFromCursor())) {
+      await this.reload();
+      return;
     }
 
-    for (const roomId of this.messagesByRoom().keys()) {
-      await this.catchUp(roomId);
-    }
-
+    await this.refreshUnreadCounts();
     const active = this.activeRoomId();
     if (active && this.messagesByRoom().has(active)) {
-      const markers = await this.api.readMarkers(active);
-      this.markersByRoom.update((all) => new Map(all).set(active, markers));
+      const deliveries = await this.api.deliveries(active);
+      this.deliveriesByRoom.update((all) => new Map(all).set(active, deliveries));
       await this.markActiveRead();
+    }
+  }
+
+  async editMessage(message: Message, body: string): Promise<void> {
+    this.upsertMessage(await this.hub.editMessage(message.roomId, message.id, body));
+  }
+
+  async deleteMessage(message: Message): Promise<void> {
+    if (await this.hub.deleteMessage(message.roomId, message.id)) {
+      this.markDeleted(message.roomId, message.id);
     }
   }
 
   async open(roomId: string): Promise<void> {
     this.activeRoomId.set(roomId);
     if (!this.messagesByRoom().has(roomId)) {
-      const [page, markers] = await Promise.all([this.api.history(roomId), this.api.readMarkers(roomId)]);
+      const [page, markers, deliveries] = await Promise.all([
+        this.api.history(roomId),
+        this.api.readMarkers(roomId),
+        this.api.deliveries(roomId),
+      ]);
       this.setMessages(roomId, { messages: page.messages, hasMoreBefore: page.hasMore });
       this.markersByRoom.update((all) => new Map(all).set(roomId, markers));
+      this.deliveriesByRoom.update((all) => new Map(all).set(roomId, deliveries));
+      const newest = page.messages.at(-1);
+      if (newest) {
+        this.reportDelivery(newest);
+      }
     }
     await this.markActiveRead();
   }
@@ -241,22 +281,156 @@ export class ChatStore {
     this.roomsById.set(new Map());
     this.messagesByRoom.set(new Map());
     this.markersByRoom.set(new Map());
+    this.deliveriesByRoom.set(new Map());
+    this.deliveredUpTo.clear();
     this.clearAllTyping();
     this.activeRoomId.set(null);
     this.onlineUsers.set(new Set());
+    this.setCursor(null);
   }
 
-  /** Fetches every message newer than the last one held for the room. */
-  private async catchUp(roomId: string): Promise<void> {
+  /** Applies the feed from the stored cursor; false when the cursor is missing or no longer valid. */
+  private async syncFromCursor(): Promise<boolean> {
+    let unknownRoom = false;
     let page;
     do {
-      const after = this.messagesByRoom().get(roomId)?.messages.at(-1)?.id ?? 0;
-      page = await this.api.history(roomId, { after, limit: 100 });
-      for (const message of page.messages) {
-        this.appendMessage(message);
-        this.patchRoom(roomId, (room) => ({ ...room, lastMessageId: Math.max(room.lastMessageId, message.id) }));
+      if (!this.cursor) {
+        return false;
       }
+      page = await this.api.sync(this.cursor);
+      if (page.reset) {
+        return false;
+      }
+      for (const change of page.changes) {
+        unknownRoom = !this.applyChange(change) || unknownRoom;
+      }
+      this.setCursor(page.cursor);
     } while (page.hasMore);
+
+    if (unknownRoom) {
+      const rooms = await this.api.rooms();
+      this.roomsById.update((all) => new Map([...all, ...rooms.map((r) => [r.id, r] as const)]));
+    }
+    return true;
+  }
+
+  /** Applies one change from the feed. Returns false when it concerns a room this device does not know yet. */
+  private applyChange(change: SyncChange): boolean {
+    const message = change.message;
+    switch (change.kind) {
+      case 'MessageSent':
+      case 'MessageEdited':
+      case 'MessageDeleted':
+        if (message) {
+          this.upsertMessage(message);
+          this.patchRoom(change.roomId, (room) => ({
+            ...room,
+            lastMessageId: Math.max(room.lastMessageId, message.id),
+          }));
+          if (change.kind === 'MessageSent') {
+            this.reportDelivery(message);
+          }
+        }
+        break;
+      case 'ReadReceipt':
+        if (change.userName && change.messageId !== null) {
+          this.upsertMarker(change.roomId, {
+            userName: change.userName,
+            lastReadMessageId: change.messageId,
+            readAt: change.occurredAt,
+          });
+        }
+        break;
+      case 'MemberJoined':
+        if (change.userName && change.userName !== this.me()) {
+          this.upsertMarker(change.roomId, { userName: change.userName, lastReadMessageId: 0, readAt: null });
+        }
+        break;
+      case 'RoomCreated':
+        break;
+    }
+    return this.roomsById().has(change.roomId);
+  }
+
+  /** Throws away loaded state and starts again from the server's current state. */
+  private async reload(): Promise<void> {
+    const active = this.activeRoomId();
+    this.messagesByRoom.set(new Map());
+    this.markersByRoom.set(new Map());
+    this.deliveriesByRoom.set(new Map());
+    await this.load();
+    if (active) {
+      await this.open(active);
+    }
+  }
+
+  private async refreshUnreadCounts(): Promise<void> {
+    for (const count of await this.api.unreadCounts()) {
+      this.patchRoom(count.roomId, (room) => ({
+        ...room,
+        unreadCount: count.unreadCount,
+        lastReadMessageId: count.lastReadMessageId,
+      }));
+    }
+  }
+
+  private setCursor(cursor: string | null): void {
+    this.cursor = cursor;
+    const key = CURSOR_KEY + '.' + (this.me() ?? '');
+    try {
+      if (cursor) {
+        localStorage.setItem(key, cursor);
+      } else {
+        localStorage.removeItem(key);
+      }
+    } catch {
+      // Storage unavailable: the cursor is kept in memory for this page only.
+    }
+  }
+
+  /** Reports a message from someone else as delivered to this device, once per newer message. */
+  private reportDelivery(message: Message): void {
+    if (message.sender === this.me() || message.id <= (this.deliveredUpTo.get(message.roomId) ?? 0)) {
+      return;
+    }
+    this.deliveredUpTo.set(message.roomId, message.id);
+    void this.hub.markDelivered(message.roomId, message.id).catch(() => undefined);
+  }
+
+  /** Adds a message, or replaces the loaded copy if this one is newer (edited or deleted). */
+  private upsertMessage(message: Message): void {
+    const loaded = this.messagesByRoom().get(message.roomId);
+    const existing = loaded?.messages.find((m) => m.id === message.id);
+    if (!loaded || !existing) {
+      this.appendMessage(message);
+      return;
+    }
+    if (message.revision > existing.revision || (message.isDeleted && !existing.isDeleted)) {
+      this.setMessages(message.roomId, {
+        ...loaded,
+        messages: loaded.messages.map((m) => (m.id === message.id ? message : m)),
+      });
+    }
+  }
+
+  private markDeleted(roomId: string, messageId: number): void {
+    const existing = this.messagesByRoom().get(roomId)?.messages.find((m) => m.id === messageId);
+    if (existing && !existing.isDeleted) {
+      this.upsertMessage({ ...existing, body: '', isDeleted: true });
+    }
+  }
+
+  private upsertDelivery(roomId: string, marker: DeliveryMarker): void {
+    const markers = this.deliveriesByRoom().get(roomId);
+    if (!markers) {
+      return;
+    }
+    const same = (d: DeliveryMarker) => d.userName === marker.userName && d.deviceId === marker.deviceId;
+    const existing = markers.find(same);
+    if (existing && existing.lastDeliveredMessageId >= marker.lastDeliveredMessageId) {
+      return;
+    }
+    this.deliveriesByRoom.update((all) => new Map(all).set(roomId, [...markers.filter((d) => !same(d)), marker]));
   }
 
   private onMessage(message: Message): void {
@@ -267,6 +441,7 @@ export class ChatStore {
     }
 
     const fromSomeoneElse = message.sender !== this.me();
+    this.reportDelivery(message);
     const isOpen = this.activeRoomId() === message.roomId && document.visibilityState === 'visible';
     this.patchRoom(message.roomId, (room) => ({
       ...room,

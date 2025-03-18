@@ -10,11 +10,14 @@ import {
 } from '@microsoft/signalr';
 import { Subject } from 'rxjs';
 import { AuthService } from './auth.service';
+import { deviceId } from './device';
 import {
   ConnectionInfo,
   ConnectionState,
+  DeliveryReceipt,
   MemberJoined,
   Message,
+  MessageDeleted,
   Presence,
   ReadReceipt,
   RoomSummary,
@@ -49,7 +52,10 @@ export class ChatHubService {
   readonly serverInstance = signal<string | null>(null);
 
   readonly messageReceived$ = new Subject<Message>();
+  readonly messageEdited$ = new Subject<Message>();
+  readonly messageDeleted$ = new Subject<MessageDeleted>();
   readonly readReceipt$ = new Subject<ReadReceipt>();
+  readonly deliveryReceipt$ = new Subject<DeliveryReceipt>();
   readonly userTyping$ = new Subject<Typing>();
   readonly userStoppedTyping$ = new Subject<TypingStopped>();
   readonly presenceChanged$ = new Subject<Presence>();
@@ -92,8 +98,21 @@ export class ChatHubService {
     return this.hub().invoke<Message>('SendMessage', roomId, body);
   }
 
+  editMessage(roomId: string, messageId: number, body: string): Promise<Message> {
+    return this.hub().invoke<Message>('EditMessage', roomId, messageId, body);
+  }
+
+  deleteMessage(roomId: string, messageId: number): Promise<boolean> {
+    return this.hub().invoke<boolean>('DeleteMessage', roomId, messageId);
+  }
+
   markRead(roomId: string, messageId: number): Promise<boolean> {
     return this.hub().invoke<boolean>('MarkRead', roomId, messageId);
+  }
+
+  /** Tells the room this device has received everything up to `messageId`. */
+  markDelivered(roomId: string, messageId: number): Promise<boolean> {
+    return this.hub().invoke<boolean>('MarkDelivered', roomId, messageId);
   }
 
   startTyping(roomId: string): Promise<void> {
@@ -117,7 +136,8 @@ export class ChatHubService {
 
   private build(): HubConnection {
     const connection = new HubConnectionBuilder()
-      .withUrl('/hubs/chat', {
+      // The device id lets the server keep delivery receipts per device.
+      .withUrl(`/hubs/chat?deviceId=${encodeURIComponent(deviceId())}`, {
         accessTokenFactory: () => this.auth.accessToken ?? '',
         // WebSockets only, without the negotiate round trip: the connection never has to
         // return to the instance that negotiated it, so no sticky sessions are needed.
@@ -132,7 +152,10 @@ export class ChatHubService {
       connection.on(method, (payload: T) => this.zone.run(() => subject.next(payload)));
 
     forward('MessageReceived', this.messageReceived$);
+    forward('MessageEdited', this.messageEdited$);
+    forward('MessageDeleted', this.messageDeleted$);
     forward('ReadReceipt', this.readReceipt$);
+    forward('DeliveryReceipt', this.deliveryReceipt$);
     forward('UserTyping', this.userTyping$);
     forward('UserStoppedTyping', this.userStoppedTyping$);
     forward('PresenceChanged', this.presenceChanged$);

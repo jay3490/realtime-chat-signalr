@@ -10,6 +10,7 @@
   --accent: #3b6ef5;
   --accent-text: #ffffff;
   --mine: #e8efff;
+  --mention: #e1e9ff;
   --online: #2fb36f;
   --offline: #9aa1ad;
   --danger: #c0392b;
@@ -28,6 +29,7 @@
     --muted: #9aa1ad;
     --border: #2a2f3a;
     --mine: #23304d;
+    --mention: #2a3a5e;
   }
 }
 
@@ -410,5 +412,66 @@ app-room-view {
 
   .sidebar {
     max-height: 40vh;
+  }
+}
+
+/* Edits, deletions and mentions */
+.message {
+  .actions {
+    display: none;
+    margin-left: auto;
+    gap: 0.5rem;
+
+    .link {
+      font-size: 0.75rem;
+    }
+
+    .danger {
+      color: var(--danger);
+    }
+  }
+
+  &:hover .actions,
+  &:focus-within .actions {
+    display: inline-flex;
+  }
+
+  .edited {
+    font-style: italic;
+  }
+
+  &.deleted .body {
+    font-style: italic;
+  }
+
+  &.mentions-me {
+    border-color: var(--accent);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+
+  .mention {
+    padding: 0 0.15rem;
+    border-radius: 4px;
+    background: var(--mention);
+    color: var(--accent);
+    font-weight: 600;
+
+    &.me {
+      background: var(--accent);
+      color: var(--accent-text);
+    }
+  }
+}
+
+.edit-form {
+  display: grid;
+  gap: 0.4rem;
+  margin-top: 0.3rem;
+  min-width: min(40ch, 70vw);
+
+  .edit-buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.4rem;
   }
 }

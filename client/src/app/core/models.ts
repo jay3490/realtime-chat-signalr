@@ -29,8 +29,55 @@ export interface Message {
   id: number;
   roomId: string;
   sender: string;
+  /** Empty once the message has been deleted. */
   body: string;
   sentAt: string;
+  /** 1 as sent, incremented by every edit. */
+  revision: number;
+  editedAt: string | null;
+  isDeleted: boolean;
+}
+
+export interface MessageDeleted {
+  roomId: string;
+  messageId: number;
+  deletedAt: string;
+}
+
+export interface DeliveryReceipt {
+  roomId: string;
+  userName: string;
+  deviceId: string;
+  lastDeliveredMessageId: number;
+  deliveredAt: string;
+}
+
+export type DeliveryMarker = Omit<DeliveryReceipt, 'roomId'>;
+
+export type SyncChangeKind =
+  | 'RoomCreated'
+  | 'MemberJoined'
+  | 'MessageSent'
+  | 'MessageEdited'
+  | 'MessageDeleted'
+  | 'ReadReceipt';
+
+/** One change from the server's feed; message changes carry the message as it is now. */
+export interface SyncChange {
+  roomId: string;
+  kind: SyncChangeKind;
+  message: Message | null;
+  messageId: number | null;
+  userName: string | null;
+  occurredAt: string;
+}
+
+export interface SyncPage {
+  changes: SyncChange[];
+  cursor: string;
+  hasMore: boolean;
+  /** The cursor is no longer valid (the read model was rebuilt): reload everything. */
+  reset: boolean;
 }
 
 export interface MessagePage {
@@ -82,6 +129,7 @@ export interface ConnectionInfo {
   userName: string;
   connectionId: string;
   instance: string;
+  deviceId: string | null;
 }
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
