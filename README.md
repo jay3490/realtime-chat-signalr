@@ -1,22 +1,33 @@
 # realtime-chat-signalr
 
-A real-time chat application: an ASP.NET Core 8 backend with a SignalR hub, and an
-Angular 20 client.
+A real-time chat application: an ASP.NET Core 8 backend with a SignalR hub, Kafka as the
+event log between a write side and a separately built read side, two worker services, and
+an Angular 20 client.
 
 - Public **channels** and **direct conversations** between two users
 - **Presence** (online/offline) tracked per user across multiple connections, so a second
   tab or device keeps you online when the first closes; stored in Redis when running more
   than one instance
 - **Typing indicators**, throttled on the server and expiring on their own on the client
-- **Read receipts** and **unread counts**
-- **Message history** with keyset paging, backwards for scrolling up and forwards for
-  catching up after a reconnect
-- **CQRS split**: commands write through EF Core to PostgreSQL; queries use a separate
-  read-only context that can point at its own connection
-- **Domain events** raised by the aggregates are dispatched after commit to a handler that
-  pushes them to SignalR clients
-- **Redis backplane** for running several API instances; the compose file starts two behind
-  nginx
+- **Read receipts**, **per-device delivery receipts** and **unread counts**
+- **Editing and deleting** your own messages, with every revision kept in the event log and
+  queryable from the read model
+- **@mentions**, highlighted in the client; a mentioned user with no open connection gets a
+  notification (webhook, or the log) from the `Chat.Notifications` service
+- **Multi-device sync**: each device keeps a cursor into a change feed and, after a
+  reconnect, fetches everything since it, so all of a user's devices converge
+- **Transactional outbox → Kafka**: every change is stored together with the event that
+  describes it, and a relay publishes the events to Kafka with an idempotent producer,
+  keyed by room id
+- **CQRS with a separate read model**: queries never touch the write tables; they read a
+  model that `Chat.Projections` builds from the Kafka topics, idempotently, and that can be
+  rebuilt from them with `--rebuild`
+- **Redis backplane** for running several API instances; the compose file starts two
+  behind nginx
+- **Per-connection rate limiting** and message size limits on the hub
+- **Readiness/liveness endpoints**, a shutdown drain, **OpenTelemetry metrics** at
+  `/metrics` and a Grafana dashboard
+- **Kubernetes manifests** (Kustomize base with dev and prod overlays)
 
 Sign-in uses a **development-only token endpoint** that issues a signed JWT for any user name
 without a password. It stands in for a real identity provider and is disabled unless
@@ -27,57 +38,83 @@ without a password. It stands in for a real identity provider and is disabled un
 ```mermaid
 flowchart LR
     Browser["Angular client"]
-    subgraph Edge["web (nginx)"]
+    subgraph Edge["web (nginx) / ingress"]
         Static["static files"]
-        Proxy["reverse proxy<br/>/api, /hubs"]
+        Proxy["/api, /hubs"]
     end
-    subgraph Api["api (2 replicas)"]
-        Hub["ChatHub"]
-        Rest["REST endpoints"]
-        Dispatcher["Dispatcher"]
+    subgraph Api["Chat.Api (2+ replicas)"]
+        Hub["ChatHub + REST"]
         Commands["Command handlers"]
         Queries["Query handlers"]
-        Events["HubNotifications<br/>(domain event handlers)"]
+        Notify["HubNotifications"]
+        Relay["Outbox relay<br/>(one replica, advisory lock)"]
     end
-    Postgres[("PostgreSQL")]
-    Redis[("Redis")]
+    subgraph Pg["PostgreSQL"]
+        Write[("write model<br/>+ OutboxMessages")]
+        Read[("read schema<br/>read model + feed")]
+    end
+    Kafka[["Kafka<br/>chat.room-events<br/>chat.user-events"]]
+    Projections["Chat.Projections"]
+    Notifications["Chat.Notifications"]
+    Redis[("Redis<br/>backplane, presence")]
+    Hook["webhook"]
 
-    Browser -- "HTTP" --> Static
-    Browser -- "HTTP /api, WebSocket /hubs/chat" --> Proxy
-    Proxy --> Hub
-    Proxy --> Rest
-    Hub --> Dispatcher
-    Rest --> Dispatcher
-    Dispatcher --> Commands
-    Dispatcher --> Queries
-    Commands -- "ChatDbContext (write)" --> Postgres
-    Queries -- "ChatReadDbContext (no tracking)" --> Postgres
-    Commands -. "events after commit" .-> Events
-    Events -- "group / user sends" --> Redis
-    Hub -- "presence leases" --> Redis
+    Browser --> Static
+    Browser -- "HTTP, WebSocket" --> Proxy --> Hub
+    Hub --> Commands -- "state + events,<br/>one transaction" --> Write
+    Hub --> Queries -- "data" --> Read
+    Queries -. "membership checks" .-> Write
+    Commands -. "after commit" .-> Notify -- "group sends" --> Redis
+    Relay -- "poll unpublished rows" --> Write
+    Relay -- "idempotent producer,<br/>key = room id" --> Kafka
+    Kafka --> Projections -- "one transaction per event<br/>+ offset + event id" --> Read
+    Kafka --> Notifications -- "presence" --> Redis
+    Notifications --> Hook
 ```
 
 Sending a message, end to end:
 
 ```mermaid
 sequenceDiagram
-    participant A as Alice (replica 1)
-    participant H as ChatHub
-    participant C as SendMessageHandler
-    participant DB as ChatDbContext
-    participant N as HubNotifications
+    participant A as Alice
+    participant H as ChatHub (replica 1)
+    participant DB as Write model
     participant R as Redis backplane
-    participant B as Bob (replica 2)
+    participant B as Bob's devices
+    participant O as Outbox relay
+    participant K as Kafka
+    participant P as Chat.Projections
+    participant RM as Read model
 
     A->>H: SendMessage(roomId, body)
-    H->>C: SendMessageCommand
-    C->>DB: room.Post(...) + SaveChangesAsync
-    DB->>DB: commit, then dispatch MessagePosted
-    DB->>N: MessagePosted
-    N->>R: Clients.Group(room).MessageReceived
-    R->>B: MessageReceived
+    H->>DB: insert message, then MessageSent outbox row (same transaction)
     H-->>A: MessageDto (with database id)
+    H->>R: MessageReceived to the room group
+    R->>B: MessageReceived (live)
+    O->>DB: read unpublished rows, oldest first
+    O->>K: produce, key = room id
+    O->>DB: mark acknowledged rows published
+    K->>P: MessageSent
+    P->>RM: message, unread counts, feed entry, offset, event id
+    B->>RM: GET /api/sync?cursor=... (after a reconnect)
 ```
+
+The live push to connected clients happens straight after the commit, in process, so it does
+not wait for Kafka. Kafka feeds the read model and the notification service.
+
+### Services
+
+| Project | Runs as | Does |
+|---------|---------|------|
+| `Chat.Api` | `api` (2+ replicas) | REST and the SignalR hub; command handlers write the write model and the outbox; query handlers read the read model; one replica relays the outbox to Kafka |
+| `Chat.Projections` | `projections` (1 replica) | Consumes both topics and maintains the read model; `--rebuild` replays them from the start |
+| `Chat.Notifications` | `notifications` | Consumes room events and notifies mentioned users who are offline |
+| `Chat.Contracts` | library | The published events and their JSON envelope |
+| `Chat.Domain`, `Chat.Application`, `Chat.Infrastructure` | libraries | Aggregates; commands, queries and the dispatcher; EF Core, the outbox, Kafka, projections, presence, health and metrics |
+
+The three services share the infrastructure library and are deployed separately. Without
+Kafka (`Kafka:BootstrapServers` empty) the API keeps the event log in memory and runs the
+projection itself, so it still works as one process for local development and tests.
 
 ## Running it
 
@@ -85,23 +122,25 @@ sequenceDiagram
 
 ```bash
 docker compose up --build
+# optionally with Prometheus on :9090 and Grafana on :3000
+docker compose --profile observability up --build
 ```
 
 Then open <http://localhost:8088> in two browsers (or a normal and a private window), sign
 in as two different users and message each other. The sidebar footer shows which API
-replica each browser is connected to. When the two users are on different replicas, delivery
-between them goes through the Redis backplane; `BackplaneTests` exercises that path with two
-in-process API instances sharing one Redis.
+replica each browser is connected to.
 
-The compose file starts:
-
-| Service    | What it does                                                                 |
-|------------|------------------------------------------------------------------------------|
-| `postgres` | PostgreSQL 16, data in the `postgres-data` volume                              |
-| `redis`    | Redis 7: SignalR backplane and presence store                                  |
-| `migrate`  | Runs the API image with `--migrate`, applies EF Core migrations, then exits    |
-| `api`      | Two replicas of the API, started after `migrate` has completed successfully    |
-| `web`      | nginx serving the Angular build and proxying `/api` and `/hubs` to the replicas |
+| Service | What it does |
+|---------|--------------|
+| `postgres` | PostgreSQL 16: the write model, and the read model in the `read` schema |
+| `redis` | Redis 7: SignalR backplane, presence, notification deduplication |
+| `kafka` | Single-node Kafka 3.9 in KRaft mode (no ZooKeeper) |
+| `migrate` | Runs the API image with `--migrate`: applies both sets of migrations and creates the topics, then exits |
+| `api` | Two replicas of the API |
+| `projections` | The read model projection |
+| `notifications` | Mention notifications; set `CHAT_NOTIFICATION_WEBHOOK` to have them POSTed somewhere, otherwise they are logged |
+| `web` | nginx serving the Angular build and proxying `/api` and `/hubs` |
+| `prometheus`, `grafana` | Only with `--profile observability`; the dashboard is provisioned from `deploy/observability` |
 
 The compose stack enables the dev token endpoint and uses a fixed signing key so it works
 out of the box. Set `CHAT_JWT_SIGNING_KEY` to override the key, and do not expose this stack
@@ -121,23 +160,41 @@ npm install
 npm start
 ```
 
-The Development profile (`appsettings.Development.json`) uses SQLite (`chat-dev.db`, created
-on startup), the in-memory presence tracker and no backplane, so nothing else needs to be
-running. To use PostgreSQL and Redis locally instead:
+The Development profile uses two SQLite files (`chat-dev.db` for the write model,
+`chat-read-dev.db` for the read model, both created on startup), the in-memory event log
+with the projection running inside the API, the in-memory presence tracker and no
+backplane, so nothing else needs to be running. To use PostgreSQL, Redis and Kafka locally,
+start them (for example with `docker compose up postgres redis kafka`) and set:
 
 ```bash
-docker run -d --name chat-postgres -e POSTGRES_USER=chat -e POSTGRES_PASSWORD=chat -e POSTGRES_DB=chat -p 5432:5432 postgres:16-alpine
-docker run -d --name chat-redis -p 6379:6379 redis:7-alpine
-
 export Database__Provider=Postgres
 export ConnectionStrings__Chat="Host=localhost;Database=chat;Username=chat;Password=chat"
+export ConnectionStrings__ChatRead=""          # same database, "read" schema
 export ConnectionStrings__Redis="localhost:6379"
+export Kafka__BootstrapServers="localhost:9092"
+dotnet run --project src/Chat.Api -- --migrate  # migrations + topics, then exits
 dotnet run --project src/Chat.Api
+dotnet run --project src/Chat.Projections
+dotnet run --project src/Chat.Notifications
 ```
 
-With `Database:Provider=Postgres` the schema comes from the migrations in
-`src/Chat.Infrastructure/Persistence/Migrations`; `MigrateOnStartup` applies them, or run
-the API once with `--migrate`.
+(The compose Kafka advertises itself as `kafka:9092`; to reach it from the host, add a
+host listener or run the services in compose.)
+
+### On Kubernetes
+
+```bash
+kubectl kustomize deploy/k8s/overlays/dev     # render
+kubectl apply -k deploy/k8s/overlays/dev      # throwaway Postgres/Redis/Kafka included
+```
+
+`deploy/k8s/base` contains the API (Deployment, Service, HPA on CPU with a slow scale-down,
+PodDisruptionBudget, readiness on `/health/ready`, liveness on `/health/live`), a migration
+Job, the projections worker (one replica, `Recreate`), the notifications worker, the web front
+end and an ingress-nginx Ingress with long proxy timeouts for WebSockets. The `prod` overlay
+expects PostgreSQL, Redis and Kafka to exist, and a `chat-secrets` Secret to be created out
+of band (see the comment in `overlays/prod/kustomization.yaml`). The manifests have been
+rendered with `kubectl kustomize`; they have not been run against a production cluster.
 
 ### Tests
 
@@ -145,13 +202,22 @@ the API once with `--migrate`.
 dotnet test
 ```
 
-- `Chat.UnitTests`: domain rules, the dispatcher, command and query handlers against SQLite
-  in memory, the typing throttle, and a presence contract run against both trackers
-- `Chat.IntegrationTests`: the whole API hosted with `WebApplicationFactory`, driven by the
-  SignalR .NET client; `BackplaneTests` starts two instances that share a database and Redis
-  and connects each user to a different one
+- `Chat.UnitTests`: domain rules (messages, edits and deletes, mentions, delivery markers),
+  the dispatcher, command and query handlers against SQLite in memory, the outbox (rows
+  written atomically with the change; the relay with a fake publisher, including partial
+  acknowledgements), the projection (idempotency by offset and by event id, every event
+  type, rebuild reproducing the same read model, the worker resuming from its checkpoint),
+  the sync feed and cursors, the token bucket, the mention notifier with fakes, health and
+  shutdown, metrics, the event envelope, the typing throttle, and a presence contract run
+  against both trackers
+- `Chat.IntegrationTests`: the whole API hosted with `WebApplicationFactory` and driven by
+  the SignalR .NET client: messages, edits and deletes, receipts, delivery receipts, sync
+  after being offline, rate and size limits, health and metrics endpoints; `BackplaneTests`
+  starts two instances that share a database and Redis
 
-The Redis presence tests and the backplane tests are skipped unless `CHAT_TEST_REDIS` is set:
+The Kafka producer and consumer are exercised only through their in-memory counterparts and
+fakes; no test runs against a Kafka broker. The Redis presence tests and the backplane tests
+are skipped unless `CHAT_TEST_REDIS` is set:
 
 ```bash
 docker run -d --rm --name chat-test-redis -p 6379:6379 redis:7-alpine
@@ -169,12 +235,25 @@ becomes `__` (for example `ConnectionStrings__Redis`).
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `ConnectionStrings:Chat` | *(required)* | Write database connection string |
-| `ConnectionStrings:ChatRead` | same as `Chat` | Connection for the query side, e.g. a read replica |
+| `ConnectionStrings:ChatRead` | `Chat` (PostgreSQL) | Read model database. With PostgreSQL it may be the same database (tables live in the `read` schema); with SQLite it must be a separate file |
 | `ConnectionStrings:Redis` | empty | When set: Redis presence and (by default) the backplane. When empty: in-memory presence, single instance only |
 | `Database:Provider` | `Postgres` | `Postgres` or `Sqlite` |
-| `Database:MigrateOnStartup` | `false` | Apply migrations (PostgreSQL) or create the schema (SQLite) at startup |
+| `Database:MigrateOnStartup` | `false` | Apply migrations (PostgreSQL) or create the schemas (SQLite) at startup |
+| `Kafka:BootstrapServers` | empty | When empty, the event log is kept in memory and the API runs the projection itself |
+| `Kafka:Topics:Rooms` / `Users` | `chat.room-events` / `chat.user-events` | Topics for room events (keyed by room id) and user events (keyed by name) |
+| `Kafka:Partitions` / `ReplicationFactor` | `6` / `1` | Used when `--migrate` creates the topics |
+| `Outbox:BatchSize` | `100` | Rows published per relay round |
+| `Outbox:PollIntervalMilliseconds` | `1000` | Idle poll; saves on the same instance wake the relay immediately |
+| `Outbox:RetentionHours` | `72` | How long published rows are kept before deletion |
+| `Realtime:Limits:MessagesPerSecond` / `MessageBurst` | `5` / `10` | Token bucket per connection for send, edit and delete |
+| `Realtime:Limits:MaximumReceiveMessageSizeBytes` | `16384` | Largest hub message; larger ones close the connection |
+| `Realtime:Limits:MaxRequestBodySizeBytes` | `65536` | Largest HTTP request body |
+| `Notifications:WebhookUrl` | empty | Where mention notifications are POSTed; empty means they are logged |
+| `Notifications:RunInProcess` | `false` | Run the notifier inside the API (only without Kafka) |
+| `Shutdown:DrainSeconds` | `0` | After SIGTERM, report not-ready for this long before stopping |
+| `Shutdown:TimeoutSeconds` | `30` | Upper bound for the whole shutdown |
 | `Redis:Backplane` | `true` | Use the SignalR Redis backplane when Redis is configured |
-| `Redis:KeyPrefix` | `chat:` | Prefix for presence keys and backplane channels |
+| `Redis:KeyPrefix` | `chat:` | Prefix for presence keys, notification claims and backplane channels |
 | `Auth:Jwt:Issuer` / `Audience` | `realtime-chat` | Token issuer and audience |
 | `Auth:Jwt:SigningKey` | *(required, 32+ chars)* | HMAC-SHA256 signing key |
 | `Auth:Jwt:TokenLifetimeHours` | `12` | Lifetime of issued tokens |
@@ -186,9 +265,9 @@ becomes `__` (for example `ConnectionStrings__Redis`).
 
 ## API surface
 
-All endpoints except the token endpoint require `Authorization: Bearer <token>`. The hub
-accepts the token as the `access_token` query parameter, which is what the SignalR client
-sends for WebSockets.
+All endpoints except the token endpoint and the health and metrics endpoints require
+`Authorization: Bearer <token>`. The hub accepts the token as the `access_token` query
+parameter, which is what the SignalR client sends for WebSockets.
 
 | Method | Path | |
 |--------|------|-|
@@ -196,81 +275,176 @@ sends for WebSockets.
 | GET | `/api/rooms` | Rooms you belong to, with unread counts |
 | GET | `/api/rooms/unread` | Unread counts only |
 | GET | `/api/rooms/{id}` | One room |
-| GET | `/api/rooms/{id}/messages?before=&after=&limit=` | Keyset-paged history (limit 1-100) |
+| GET | `/api/rooms/{id}/messages?before=&after=&limit=` | Keyset-paged history (limit 1-100); deleted messages come back as tombstones |
 | POST | `/api/rooms/{id}/messages` | Send a message (same command as the hub) |
+| PUT / DELETE | `/api/rooms/{id}/messages/{messageId}` | Edit (`{ "body": "..." }`) or delete your own message |
+| GET | `/api/rooms/{id}/messages/{messageId}/revisions` | Every version of a message's text |
 | GET | `/api/rooms/{id}/read-markers` | How far each member has read |
 | POST | `/api/rooms/{id}/read` | `{ "messageId": 42 }` marks read up to a message |
+| GET | `/api/rooms/{id}/deliveries` | How far each member's devices have received |
+| POST | `/api/rooms/{id}/delivered` | `{ "messageId": 42, "deviceId": "..." }` records a delivery |
+| GET | `/api/sync?cursor=&limit=` | Changes in your rooms after a cursor; without one, the current head |
 | GET / POST | `/api/channels` | List channels / create one |
 | POST | `/api/channels/{id}/join` | Join a channel |
 | POST | `/api/direct` | `{ "userName": "bob" }` opens (or returns) the direct conversation |
 | GET | `/api/users` | Users who have signed in |
 | GET | `/api/presence` | Users online now |
+| GET | `/health/live`, `/health/ready`, `/health` | Liveness, readiness (databases, Redis, draining), liveness alias |
+| GET | `/metrics` | Prometheus scrape endpoint (every service) |
 
-Hub `/hubs/chat`: client-to-server `SendMessage`, `MarkRead`, `StartTyping`, `StopTyping`,
-`GetOnlineUsers`, `GetConnectionInfo`; server-to-client `MessageReceived`, `ReadReceipt`,
-`UserTyping`, `UserStoppedTyping`, `PresenceChanged`, `RoomAdded`, `MemberJoined`.
+Hub `/hubs/chat?deviceId=...`: client-to-server `SendMessage`, `EditMessage`,
+`DeleteMessage`, `MarkRead`, `MarkDelivered` (needs a `deviceId`), `StartTyping`,
+`StopTyping`, `GetOnlineUsers`, `GetConnectionInfo`; server-to-client `MessageReceived`,
+`MessageEdited`, `MessageDeleted`, `ReadReceipt`, `DeliveryReceipt`, `UserTyping`,
+`UserStoppedTyping`, `PresenceChanged`, `RoomAdded`, `MemberJoined`.
 
 ## Design decisions
 
-**Commands and queries take different paths.** Command handlers load aggregates through
-`ChatDbContext`, change them and save. Query handlers project straight to DTOs through
-`ChatReadDbContext`, which has no change tracking, refuses to save and has its own
-connection string. Both share one EF Core mapping, so there is one schema and one set of
-migrations (owned by the write context).
+**The write side stores state; the read side is built only from events.** Command handlers
+load aggregates through `ChatDbContext`, change them and save, as before. What is new is
+that every change also produces a published event (`MessageSent`, `MessageEdited`,
+`MessageDeleted`, `MemberJoined`, `ReadReceiptRecorded`, `DeliveryRecorded`, `RoomCreated`,
+`UserRegistered`), and the read model is derived from those events alone. Aggregates are
+not rebuilt from events, so this is event sourcing of the read side, with Kafka as its
+system of record, rather than of the aggregates themselves.
 
-**A hand-rolled dispatcher instead of MediatR.** One small class: handlers are found by
-assembly scan and invoked through cached generic wrappers. It avoids a dependency whose
-current versions are commercially licensed, and the indirection stays easy to follow.
+**A transactional outbox, written in the same transaction.** `SaveChangesAsync` maps the
+domain events to contracts, serializes them into `OutboxMessages` and commits once. Message
+ids come from the database, so the outbox rows are added by a second save inside the same
+transaction. Either the change and its events are stored, or neither is.
 
-**Domain events are dispatched after commit.** `ChatDbContext.SaveChangesAsync` collects the
-events raised by tracked aggregates, saves, and only then dispatches them, so clients never
-hear about a message that was rolled back. `MessagePosted` carries the entity because its
-id is assigned by the database. A failing handler is logged rather than rethrown, because
-the change has already been committed. This is not an outbox: if the process stops between
-the commit and the dispatch, that push is lost (the message itself is saved, and clients
-pick it up from history after their next reconnect).
+**One relay, publishing in order, at least once.** Every API replica runs the relay loop, but
+only the one holding a PostgreSQL advisory lock (on a dedicated, unpooled connection)
+publishes; if it dies, the lock goes with its session and another replica takes over. It
+reads the oldest unpublished rows, hands them all to an idempotent producer (`acks=all`)
+keyed by room id, and marks as published only the prefix the broker acknowledged. A failure
+therefore leads to re-sending, never to a gap or a reordering within a room.
+
+**Projections are idempotent twice over.** Each event is applied in its own read-model
+transaction that also records the partition's offset and the event id. An offset at or below
+the checkpoint is skipped (a replay after a crash), and an event id already seen is ignored
+(a re-sent duplicate at a new offset). The handlers themselves are also written to be no-ops
+on repeat. A failing event is retried with back-off rather than skipped. Partitions resume
+from the checkpoints in the read model, not from the consumer group's offsets, which is what
+makes `--rebuild` work: it empties the read model and its checkpoints, and every partition
+is read again from offset 0. The topics are created with infinite retention and without
+compaction for that reason.
+
+**Reads lag writes, so some reads go to the write model on purpose.** The read model is
+eventually consistent. Responses to commands that the caller needs at once (create a
+channel, join, open a direct conversation) are built from the write model
+(`GetCurrentRoomSummaryQuery`), and so are membership checks: hub group membership and
+access decisions must not trail a join. Everything else (history, room lists, unread
+counts, receipts, users, sync) comes from the read model.
+
+**Sync cursors carry an epoch.** The projection appends each change to a feed whose positions
+are assigned by the read database in commit order; a single projection replica keeps that
+order meaningful. A cursor is `epoch.position`; a rebuild generates a new epoch, so a device
+holding an old cursor gets `reset: true` and reloads instead of silently skipping changes.
+A device without a cursor gets the head first and then loads its state, so nothing falls in
+between. Message entries return the message as it is now, so replaying converges.
+
+**Delivery is per device, reading is per user.** A device id (chosen by the client, sent on the
+hub connection) lets the server keep one delivery marker per device, which only moves
+forward; read markers stay per user, as before.
+
+**Notifications only for people who are offline.** The notifier checks the shared presence in
+Redis; someone with an open connection already sees the highlighted mention. A Redis
+`SET NX` claim per event and user keeps a replayed event from notifying twice, and a failed
+send gives its claim back so the retry delivers it. A new consumer group starts at the end of
+the log, so deploying the service does not notify about old mentions.
+
+**Rate limits per connection.** A hub filter gives each connection a token bucket on connect
+and refuses message commands once it is empty, so one client cannot flood a room or the
+outbox. Typing has its own throttle; reads are not limited.
+
+**Readiness is not liveness.** `/health/live` checks nothing, so a database outage does not get
+every pod restarted; `/health/ready` checks the databases, Redis and whether the host is
+draining. On shutdown the host reports not-ready for `Shutdown:DrainSeconds` before Kestrel
+stops, so the load balancer moves new connections elsewhere first; SignalR clients
+reconnect automatically.
 
 **Broadcasts come from events, not from the hub.** The hub runs the command and returns the
-result to the caller; `HubNotifications` sends to the room's group. Sending through
-`POST /api/rooms/{id}/messages` therefore reaches connected clients too.
+result to the caller; `HubNotifications` sends to the room's group after the commit. Sending
+through `POST /api/rooms/{id}/messages` therefore reaches connected clients too.
 
-**Message ids are the cursor.** Ids are database-generated and increase in insertion order,
-so history pages with `WHERE Id < @before ORDER BY Id DESC` and catch-up with `Id > @after`,
-both served by an index on `(RoomId, Id)`. Read markers store the last read id, which makes
-an unread count a single `COUNT` over the same index.
+**Message ids are the cursor for history.** Ids are database-generated and increase in
+insertion order, so history pages with `WHERE Id < @before ORDER BY Id DESC`, served by an
+index on `(RoomId, Id)` in the read model.
 
 **Presence is per connection, with leases.** A user is online while they have at least one
 live connection. In Redis that is an `online` set plus a sorted set per user of connection
-ids scored by lease expiry. Connect, disconnect and the expiry sweep each run as one Lua
-script, so two instances handling the same user at once cannot both announce, or both miss,
-a change. Every instance renews the leases of its own connections every 30 seconds; if an
-instance dies without running its disconnect handlers, its connections stop being renewed
-and are swept out, and their users go offline.
+ids scored by lease expiry; connect, disconnect and the expiry sweep each run as one Lua
+script. Every instance renews its own connections' leases; connections of a crashed instance
+expire and their users go offline.
 
-**Typing is throttled per instance.** The throttle keeps the time of the last broadcast per
-(room, user) in memory. That is sufficient because a connection always talks to the same
-instance. Clients are told how long to show the indicator, which is longer than the throttle
-window, so it stays up while someone keeps typing and disappears by itself if they stop or
-drop off. Sending a message resets the window.
+**No sticky sessions.** The browser client connects with WebSockets and `skipNegotiation`, so
+nginx and the ingress can round-robin, and the backplane delivers across instances.
 
-**No sticky sessions.** The browser client connects with WebSockets and `skipNegotiation`,
-so there is no negotiate request that a later request would have to follow to the same
-instance. nginx can round-robin, and the backplane delivers across instances.
+**A hand-rolled dispatcher instead of MediatR**, and **SQLite for development and tests**,
+as before: the handler tests use a real relational database so unique indexes, identity
+columns and filtered includes behave as they do in PostgreSQL.
 
-**Migrations run once, before the replicas start.** Two replicas migrating at the same time
-would race, so compose runs the API image with `--migrate` as a one-shot service and starts
-the replicas only after it has completed.
+## Observability
 
-**SQLite for development and tests.** The handler tests use SQLite in memory rather than the
-EF InMemory provider so that unique indexes, identity columns and filtered includes behave
-as they do in PostgreSQL. The same provider lets the API run locally with no database server.
+Every service exports OpenTelemetry metrics at `/metrics`:
 
-### Known limitations
+| Metric (Prometheus name) | Meaning |
+|--------------------------|---------|
+| `chat_connections_active` | SignalR connections open on an API instance |
+| `chat_messages_sent_total` | Messages committed |
+| `chat_hub_rate_limited_total` | Hub invocations refused by the rate limit, by method |
+| `chat_outbox_published_total`, `chat_outbox_failures_total` | Events acknowledged by Kafka; relay rounds that left rows behind |
+| `chat_projection_events_total` | Events handled by the projection, by outcome (Applied, Duplicate, AlreadyProjected, Unreadable) |
+| `chat_projection_lag_seconds` | Age of the most recently projected event when it was applied |
+| `chat_notifications_sent_total` | Mention notifications sent |
 
-- The dev token endpoint is the only way to sign in; there is no real identity provider.
-- Events are not stored in an outbox (see above).
-- If `ConnectionStrings:ChatRead` points at an asynchronous replica, reads straight after a
-  write may not see it yet.
+ASP.NET Core's request, Kestrel and SignalR connection metrics and the .NET runtime metrics
+are exported as well. `deploy/observability/grafana/dashboards/realtime-chat.json` is a
+dashboard over these series (connected clients, messages per second, projection lag, outbox,
+notifications, request latency); compose provisions it with `--profile observability`.
+
+## Production considerations
+
+What would still need attention before running this for real users:
+
+- **Identity.** The dev token endpoint must stay off; a real identity provider has to issue
+  the JWTs, and the signing key belongs in a secret store.
+- **Kafka.** The compose and dev setups run a single broker with replication factor 1. A real
+  cluster needs at least three brokers, `ReplicationFactor` 3 and `min.insync.replicas` 2 on
+  the topics, TLS/SASL (the client currently connects in plaintext), and monitoring of
+  consumer lag in addition to the lag metric here.
+- **Event retention and privacy.** Topics keep everything forever so the read model can be
+  rebuilt. A deleted message is a tombstone in the read model, but its earlier text is still
+  in the log. Honouring erasure requests would need crypto-shredding (per-user or per-room
+  keys) or a compacted snapshot strategy.
+- **Schema evolution.** Events are JSON with the record name as the type. Changes must stay
+  backward compatible (add optional fields only); a schema registry would make that
+  enforceable.
+- **Projection throughput.** The projection applies one event per transaction on a single
+  replica, which keeps feed positions in commit order but bounds throughput. Scaling it out
+  would need per-partition (per-room) cursors instead of one global feed position.
+- **Rebuilds.** `--rebuild` empties the live read model, so queries see a partly rebuilt model
+  until it catches up. A safer procedure is to rebuild into a second schema and switch the
+  API's `ChatRead` connection when it has caught up.
+- **Read-your-writes.** Apart from the cases above that read the write model, a client can
+  briefly read state older than its own last command; the client is written for that, other
+  consumers of the API may not be.
+- **Existing data.** Upgrading a database that already held messages before the outbox
+  existed leaves the read model without them; a one-off backfill that writes outbox rows from
+  the current tables would be needed.
+- **Growth.** `ProcessedEvents` and the sync feed grow without bound and would need pruning
+  (for example, ids older than the topic's oldest offset still in use, feed entries older than
+  any device could reasonably hold).
+- **Load.** No load tests have been run; connection counts, message rates and HPA thresholds
+  are untested defaults.
+
+## Known limitations
+
+- The dev token endpoint is the only way to sign in.
+- Mention notifications are sent for new messages, not for mentions added by an edit.
+- A change committed but not yet projected when a device syncs is picked up by that device's
+  next sync, not by the current one (live pushes cover connected devices meanwhile).
 - Users are names only; there are no profiles, avatars or attachments.
 - The presence sweep reads the whole online set on each tick, which suits small deployments.
 
@@ -278,15 +452,22 @@ as they do in PostgreSQL. The same provider lets the API run locally with no dat
 
 ```
 src/
-  Chat.Domain/           Rooms, members, messages, users; invariants and domain events
-  Chat.Application/      Commands, queries, dispatcher, presence and typing abstractions
-  Chat.Infrastructure/   EF Core contexts, configurations and migrations; presence trackers
-  Chat.Api/              Minimal API endpoints, ChatHub, event-to-hub notifications, JWT setup
+  Chat.Contracts/        Published events and the JSON envelope
+  Chat.Domain/           Rooms, members, messages, delivery markers, users; invariants and domain events
+  Chat.Application/      Commands, queries, dispatcher, read model views, sync cursor, presence and typing
+  Chat.Infrastructure/   EF Core write model and outbox, read model and projector, Kafka, presence,
+                         notifications, health checks, shutdown drain, metrics
+  Chat.Api/              Minimal API endpoints, ChatHub, rate limit filter, event-to-hub notifications, JWT
+  Chat.Projections/      Worker host for the projection (--rebuild)
+  Chat.Notifications/    Worker host for mention notifications
 tests/
-  Chat.UnitTests/        Domain, handlers (SQLite), throttle, presence contract (in-memory + Redis)
+  Chat.UnitTests/        Domain, handlers, outbox, projection, sync, notifier, limits (SQLite and fakes)
   Chat.IntegrationTests/ WebApplicationFactory + SignalR client
 client/                  Angular 20 client (standalone components, signals)
-docker-compose.yml       postgres, redis, migrate, api x2, web
+deploy/
+  k8s/                   Kustomize base, dev and prod overlays
+  observability/         Prometheus scrape config, Grafana provisioning and dashboard
+docker-compose.yml       postgres, redis, kafka, migrate, api x2, projections, notifications, web
 ```
 
 ## License
